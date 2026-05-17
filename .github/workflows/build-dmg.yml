@@ -43,11 +43,22 @@ jobs:
           CODESIGN_IDENTITY: "-"
         run: scripts/build_dmg.sh
 
+      - name: Locate DMG
+        id: dmg
+        run: |
+          dmg_path="$(find "$PWD/.build" -maxdepth 1 -type f -name "*.dmg" -print -quit)"
+          if [[ -z "$dmg_path" ]]; then
+            echo "No DMG found in .build" >&2
+            exit 1
+          fi
+          echo "path=$dmg_path" >> "$GITHUB_OUTPUT"
+          echo "Found DMG: $dmg_path"
+
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: MacAssistant-DMG
-          path: .build/*.dmg
+          path: ${{ steps.dmg.outputs.path }}
           if-no-files-found: error
 
       - name: Upload DMG to GitHub Release
@@ -56,9 +67,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" .build/*.dmg --clobber
+            gh release upload "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.path }}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" .build/*.dmg \
+            gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.path }}" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes
           fi
