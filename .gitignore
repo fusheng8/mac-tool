@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+.DS_Store
+DerivedData/
+AGENTS.md
+agents.md
+.learnings/

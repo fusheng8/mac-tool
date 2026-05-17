@@ -1,0 +1,64 @@
+name: Build DMG
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    name: Build macOS DMG
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Resolve app version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "APP_VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+            echo "APP_BUILD_VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "APP_VERSION=0.1.0" >> "$GITHUB_ENV"
+            echo "APP_BUILD_VERSION=0.1.0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build DMG
+        env:
+          PACKAGE_ONLY: "1"
+          CODESIGN_IDENTITY: "-"
+        run: scripts/build_dmg.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacAssistant-DMG
+          path: .build/*.dmg
+          if-no-files-found: error
+
+      - name: Upload DMG to GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" .build/*.dmg --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" .build/*.dmg \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
