@@ -41,6 +41,7 @@ jobs:
         env:
           PACKAGE_ONLY: "1"
           CODESIGN_IDENTITY: "-"
+          DMG_NAME: "MacTool.dmg"
         run: scripts/build_dmg.sh
 
       - name: Locate DMG
