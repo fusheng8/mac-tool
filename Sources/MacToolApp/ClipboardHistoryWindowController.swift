@@ -94,16 +94,17 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         NSApp.activate(ignoringOtherApps: true)
         window?.makeFirstResponder(nil)
         installOutsideClickMonitors()
-        renderGeneration += 1
-        let generation = renderGeneration
+        clearSelection()
+        window?.layoutIfNeeded()
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.renderGeneration == generation else { return }
+            guard let self, self.window?.isVisible == true else { return }
             self.rebuildApplicationFilter()
             self.rebuildList()
         }
     }
 
     func reload() {
+        rebuildApplicationFilter()
         rebuildList()
     }
 
@@ -404,7 +405,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
         let items = filteredItems()
         displayedItems = items
-        ensureSelection(in: items)
+        validateSelection(in: items)
         pruneReusableRows()
         updateFooter()
         if items.isEmpty {
@@ -1035,21 +1036,18 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         return returnKeyCodes.contains(eventKeyCode) && returnKeyCodes.contains(shortcutKeyCode)
     }
 
-    private func ensureSelection(in items: [ClipboardHistoryItem]) {
-        guard !items.isEmpty else {
+    private func validateSelection(in items: [ClipboardHistoryItem]) {
+        guard let selectedItemID,
+              items.contains(where: { $0.id == selectedItemID }) else {
             selectedItemID = nil
             return
         }
-        if let selectedItemID, items.contains(where: { $0.id == selectedItemID }) {
-            return
-        }
-        selectedItemID = items[0].id
     }
 
     private func pasteSelected(mode: ClipboardPasteMode) -> Bool {
         flushPendingListRebuild()
         let items = displayedItems
-        ensureSelection(in: items)
+        validateSelection(in: items)
         guard let selectedItemID,
               let item = items.first(where: { $0.id == selectedItemID }) else {
             return false
@@ -1061,7 +1059,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private func showSelectedItemContextMenu() -> Bool {
         flushPendingListRebuild()
         let items = displayedItems
-        ensureSelection(in: items)
+        validateSelection(in: items)
         guard let selectedItemID else { return false }
         if let row = rowViewsByID[selectedItemID] {
             row.showContextMenu()
@@ -1078,7 +1076,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private func deleteSelectedItem() -> Bool {
         flushPendingListRebuild()
         let items = displayedItems
-        ensureSelection(in: items)
+        validateSelection(in: items)
         guard let selectedItemID,
               let item = items.first(where: { $0.id == selectedItemID }) else {
             return false
@@ -1101,12 +1099,24 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         flushPendingListRebuild()
         let items = displayedItems
         guard !items.isEmpty else { return false }
-        ensureSelection(in: items)
-        let currentIndex = selectedItemID.flatMap { id in items.firstIndex(where: { $0.id == id }) } ?? 0
-        let targetIndex = min(max(currentIndex + offset, 0), items.count - 1)
-        guard targetIndex != currentIndex else { return true }
+        validateSelection(in: items)
+
+        let targetIndex: Int
+        if let currentIndex = selectedItemID.flatMap({ id in items.firstIndex(where: { $0.id == id }) }) {
+            targetIndex = min(max(currentIndex + offset, 0), items.count - 1)
+            guard targetIndex != currentIndex else { return true }
+        } else {
+            targetIndex = offset < 0 ? items.count - 1 : 0
+        }
+
         selectItem(items[targetIndex].id, scrollToSelection: true)
         return true
+    }
+
+    private func clearSelection() {
+        guard selectedItemID != nil else { return }
+        selectedItemID = nil
+        rowViewsByID.values.forEach { $0.setSelected(false) }
     }
 
     private func selectItem(_ itemID: UUID, scrollToSelection: Bool) {
@@ -1177,7 +1187,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func selectedItem() -> ClipboardHistoryItem? {
         let items = displayedItems
-        ensureSelection(in: items)
+        validateSelection(in: items)
         guard let selectedItemID else { return nil }
         return items.first { $0.id == selectedItemID }
     }
