@@ -83,9 +83,7 @@ final class MenuBarController {
     }
 
     private func statusIcon() -> NSImage? {
-        let sourceImage = Bundle.module.image(forResource: "StatusIconRingTemplate")
-            ?? Bundle.main.image(forResource: "StatusIconRingTemplate")
-            ?? Bundle.module.image(forResource: "StatusIconRingGray")
+        let sourceImage = Bundle.main.image(forResource: "StatusIconRingTemplate")
             ?? Bundle.main.image(forResource: "StatusIconRingGray")
             ?? NSImage(contentsOf: URL(fileURLWithPath: "Resources/StatusIconRingGray.png"))
         let image = sourceImage?.copy() as? NSImage
@@ -131,7 +129,11 @@ final class MenuBarController {
     }
 
     func openSettingsWindow() {
-        openSettings(page: nil)
+        openSystemOverview()
+    }
+
+    func openSystemOverview() {
+        openSettings(page: .systemOverview)
     }
 
     func openDisplaySettings() {
@@ -170,7 +172,7 @@ final class MenuBarController {
                 self?.onConfigurationChanged()
                 self?.rebuildMenu()
             } onClose: {
-                NSApp.setActivationPolicy(.accessory)
+                NSApp.setActivationPolicy(.regular)
             }
         }
         if let page {

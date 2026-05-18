@@ -41,12 +41,16 @@ if [[ -z "$SPARKLE_FRAMEWORK_SOURCE" ]]; then
     echo "未找到 Sparkle.framework，请先确认 SwiftPM 已解析 Sparkle 依赖。" >&2
     exit 1
 fi
+MAC_TOOL_RESOURCE_BUNDLE="$(find "$ROOT_DIR/.build/arm64-apple-macosx/release" "$ROOT_DIR/.build/release" -maxdepth 1 -name "mac-tool_MacToolApp.bundle" -type d -print -quit 2>/dev/null || true)"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$EXTENSION_MACOS_DIR"
 cp "$ROOT_DIR/.build/release/mac-tool" "$MACOS_DIR/mac-tool"
 cp "$ROOT_DIR/.build/release/mac-tool-finder-sync" "$EXTENSION_MACOS_DIR/mac-tool-finder-sync"
 ditto "$SPARKLE_FRAMEWORK_SOURCE" "$FRAMEWORKS_DIR/Sparkle.framework"
+if [[ -n "$MAC_TOOL_RESOURCE_BUNDLE" ]]; then
+    ditto "$MAC_TOOL_RESOURCE_BUNDLE" "$RESOURCES_DIR/$(basename "$MAC_TOOL_RESOURCE_BUNDLE")"
+fi
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/mac-tool" 2>/dev/null || true
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 cp "$ROOT_DIR/Resources/StatusIconRingTemplate.png" "$RESOURCES_DIR/StatusIconRingTemplate.png"
@@ -79,8 +83,6 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
-    <key>LSUIElement</key>
-    <true/>
     <key>LSMultipleInstancesProhibited</key>
     <true/>
     <key>SUFeedURL</key>
@@ -203,6 +205,7 @@ echo "已创建 $APP_DIR"
 echo "版本号：$APP_VERSION ($APP_BUILD_VERSION)"
 echo "签名身份：$CODESIGN_IDENTITY"
 echo "Sparkle：$SPARKLE_FRAMEWORK_SOURCE"
+echo "资源包：${MAC_TOOL_RESOURCE_BUNDLE:-未找到，已使用直接复制资源}"
 
 if [[ "$PACKAGE_ONLY" == "1" ]]; then
     echo "已跳过安装和 Finder Sync 注册"

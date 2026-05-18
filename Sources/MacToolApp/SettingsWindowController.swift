@@ -109,7 +109,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var profiles: [DisplayProfile]
     private var scannedDisplays: [DisplaySnapshot] = []
     private var selectedDisplayIndex = 0
-    private var selectedSettingsPage: SettingsPage = .displays
+    private var selectedSettingsPage: SettingsPage = .systemOverview
     private var isReloadingUI = false
 
     private let displayTabsStack = NSStackView()

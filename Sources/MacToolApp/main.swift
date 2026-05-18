@@ -232,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         try? AppPaths.ensureDirectories()
         DistributedNotificationCenter.default().addObserver(
             self,
@@ -312,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         automation.start()
         clipboard.start()
         recovery.recoverPendingOnLaunch()
+        menuBar.openSystemOverview()
         AppLogger.shared.info("Mac助手已启动")
     }
 
