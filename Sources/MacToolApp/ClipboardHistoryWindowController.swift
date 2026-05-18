@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ImageIO
 import QuickLookUI
 
 final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
@@ -7,7 +8,11 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         static let defaultSize = NSSize(width: 320, height: 500)
         static let minSize = NSSize(width: 300, height: 420)
         static let screenMargin: CGFloat = 36
-        static let renderBatchSize = 60
+        static let rowHeight: CGFloat = 66
+        static let rowSpacing: CGFloat = 2
+        static let rowOverscan = 4
+        static let searchIndexBatchSize = 60
+        static let searchIndexPrebuildDelay: TimeInterval = 0.18
         static let deferredListRebuildDelay: TimeInterval = 0.018
     }
 
@@ -34,10 +39,18 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private var displayedItems: [ClipboardHistoryItem] = []
     private var rowViewsByID: [UUID: ClipboardHistoryRowView] = [:]
     private var searchIndexByID: [UUID: String] = [:]
+    private let listTopSpacer = NSView()
+    private let listBottomSpacer = NSView()
+    private var listTopSpacerHeightConstraint: NSLayoutConstraint?
+    private var listBottomSpacerHeightConstraint: NSLayoutConstraint?
     private weak var emptyListView: NSView?
     private var renderGeneration = 0
+    private var renderedRange: Range<Int> = 0..<0
     private var pendingListRebuildWorkItem: DispatchWorkItem?
     private var pendingListRebuildID = 0
+    private let searchIndexQueue = DispatchQueue(label: "com.fusheng.mac-tool.clipboard.search-index", qos: .utility)
+    private var searchIndexGeneration = 0
+    private var searchIndexPrebuildWorkItem: DispatchWorkItem?
     private var shortcutHintedItemIDs = Set<UUID>()
     private var isPinned = false
     private var quickLookItem: ClipboardQuickLookItem?
@@ -268,9 +281,11 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
         listStack.orientation = .vertical
         listStack.alignment = .centerX
-        listStack.spacing = 2
+        listStack.spacing = Layout.rowSpacing
         listStack.edgeInsets = NSEdgeInsets(top: 6, left: 4, bottom: 6, right: 4)
         listStack.translatesAutoresizingMaskIntoConstraints = false
+        configureVirtualListSpacer(listTopSpacer, constraint: &listTopSpacerHeightConstraint)
+        configureVirtualListSpacer(listBottomSpacer, constraint: &listBottomSpacerHeightConstraint)
 
         let documentView = ClipboardFlippedView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
@@ -398,9 +413,9 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         displayedItems = items
         ensureSelection(in: items)
         pruneReusableRows()
-        scrollListToTop()
         updateFooter()
         if items.isEmpty {
+            renderedRange = 0..<0
             showEmptyList(
                 title: controller.history.isEmpty ? "暂无剪贴板历史" : "没有匹配结果",
                 detail: controller.history.isEmpty ? "复制内容后会出现在这里。" : "换个关键词或切换到全部应用。",
@@ -408,8 +423,8 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             )
         } else {
             hideEmptyList()
-            let nextIndex = appendRows(from: items, startIndex: 0, generation: generation)
-            scheduleRowAppend(from: items, startIndex: nextIndex, generation: generation)
+            scrollListToTop()
+            renderRows(from: items, range: visibleRenderRange(for: items), generation: generation)
         }
         updateVisibleShortcutHints()
         DispatchQueue.main.async { [weak self] in
@@ -418,16 +433,81 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         }
     }
 
-    private func appendRows(from items: [ClipboardHistoryItem], startIndex: Int, generation: Int) -> Int {
+    private var rowStride: CGFloat {
+        Layout.rowHeight + Layout.rowSpacing
+    }
+
+    private func configureVirtualListSpacer(_ spacer: NSView, constraint: inout NSLayoutConstraint?) {
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.isHidden = true
+        let height = spacer.heightAnchor.constraint(equalToConstant: 0)
+        height.isActive = true
+        constraint = height
+    }
+
+    private func ensureVirtualListSpacers() {
+        if listTopSpacer.superview == nil {
+            listStack.insertArrangedSubview(listTopSpacer, at: 0)
+        }
+        if listBottomSpacer.superview == nil {
+            listStack.addArrangedSubview(listBottomSpacer)
+        } else if listStack.arrangedSubviews.last !== listBottomSpacer {
+            listStack.removeArrangedSubview(listBottomSpacer)
+            listStack.addArrangedSubview(listBottomSpacer)
+        }
+        listTopSpacer.isHidden = false
+        listBottomSpacer.isHidden = false
+    }
+
+    private func removeVirtualListSpacers() {
+        setVirtualSpacerHeights(top: 0, bottom: 0)
+        for spacer in [listTopSpacer, listBottomSpacer] where spacer.superview != nil {
+            listStack.removeArrangedSubview(spacer)
+            spacer.removeFromSuperview()
+            spacer.isHidden = true
+        }
+    }
+
+    private func setVirtualSpacerHeights(top: CGFloat, bottom: CGFloat) {
+        listTopSpacerHeightConstraint?.constant = max(0, top)
+        listBottomSpacerHeightConstraint?.constant = max(0, bottom)
+    }
+
+    private func visibleRenderRange(for items: [ClipboardHistoryItem]) -> Range<Int> {
+        guard !items.isEmpty else { return 0..<0 }
+        let viewportHeight = max(
+            listScrollView.contentView.bounds.height,
+            Layout.defaultSize.height - 52 - 40 - 32
+        )
+        let visibleMinY = max(0, listScrollView.contentView.bounds.minY)
+        let overscanHeight = CGFloat(Layout.rowOverscan) * rowStride
+        let start = min(items.count - 1, max(0, Int(floor((visibleMinY - overscanHeight) / rowStride))))
+        let end = min(items.count, Int(ceil((visibleMinY + viewportHeight + overscanHeight) / rowStride)) + 1)
+        return start..<max(start + 1, end)
+    }
+
+    private func updateRenderedRowsForScroll() {
+        guard !displayedItems.isEmpty else { return }
+        let nextRange = visibleRenderRange(for: displayedItems)
+        guard nextRange != renderedRange else { return }
+        renderGeneration += 1
+        renderRows(from: displayedItems, range: nextRange, generation: renderGeneration)
+    }
+
+    private func renderRows(from items: [ClipboardHistoryItem], range: Range<Int>, generation: Int) {
         guard renderGeneration == generation,
-              startIndex < items.count else {
-            return startIndex
+              !items.isEmpty else {
+            return
         }
 
-        let endIndex = min(startIndex + Layout.renderBatchSize, items.count)
-        reconcileRows(Array(items[..<endIndex]))
+        let clampedStart = min(max(range.lowerBound, 0), items.count)
+        let clampedEnd = min(max(range.upperBound, clampedStart), items.count)
+        let clampedRange = clampedStart..<clampedEnd
+        renderedRange = clampedRange
+        ensureVirtualListSpacers()
+        setVirtualSpacerHeights(top: CGFloat(clampedStart) * rowStride, bottom: CGFloat(items.count - clampedEnd) * rowStride)
+        reconcileRows(Array(items[clampedRange]))
         updateVisibleShortcutHints()
-        return endIndex
     }
 
     private func constrainListItemWidth(_ view: NSView) {
@@ -442,6 +522,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func showEmptyList(title: String, detail: String, symbolName: String) {
         removeArrangedRows()
+        removeVirtualListSpacers()
         clearVisibleShortcutHints()
         if let emptyListView {
             emptyListView.removeFromSuperview()
@@ -457,6 +538,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         listStack.removeArrangedSubview(emptyListView)
         emptyListView.removeFromSuperview()
         self.emptyListView = nil
+        ensureVirtualListSpacers()
     }
 
     private func removeArrangedRows() {
@@ -480,6 +562,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     private func reconcileRows(_ items: [ClipboardHistoryItem]) {
+        ensureVirtualListSpacers()
         let targetIDs = Set(items.map(\.id))
         for view in listStack.arrangedSubviews {
             guard let row = view as? ClipboardHistoryRowView,
@@ -488,6 +571,17 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             }
             listStack.removeArrangedSubview(row)
             row.removeFromSuperview()
+            rowViewsByID[row.itemID] = nil
+            shortcutHintedItemIDs.remove(row.itemID)
+        }
+
+        for id in Array(rowViewsByID.keys) where !targetIDs.contains(id) {
+            if let row = rowViewsByID[id], row.superview != nil {
+                listStack.removeArrangedSubview(row)
+                row.removeFromSuperview()
+            }
+            rowViewsByID[id] = nil
+            shortcutHintedItemIDs.remove(id)
         }
 
         for (index, item) in items.enumerated() {
@@ -495,13 +589,14 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             row.update(item: item, selected: selectedItemID == item.id)
 
             let currentIndex = listStack.arrangedSubviews.firstIndex(of: row)
-            if currentIndex == index {
+            let targetIndex = index + 1
+            if currentIndex == targetIndex {
                 continue
             }
             if currentIndex != nil {
                 listStack.removeArrangedSubview(row)
             }
-            let insertionIndex = min(index, listStack.arrangedSubviews.count)
+            let insertionIndex = min(targetIndex, max(0, listStack.arrangedSubviews.count - 1))
             listStack.insertArrangedSubview(row, at: insertionIndex)
             constrainListItemWidth(row)
         }
@@ -514,15 +609,6 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         let row = makeRow(for: item)
         rowViewsByID[item.id] = row
         return row
-    }
-
-    private func scheduleRowAppend(from items: [ClipboardHistoryItem], startIndex: Int, generation: Int) {
-        guard startIndex < items.count else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.renderGeneration == generation else { return }
-            let nextIndex = self.appendRows(from: items, startIndex: startIndex, generation: generation)
-            self.scheduleRowAppend(from: items, startIndex: nextIndex, generation: generation)
-        }
     }
 
     private func makeRow(for item: ClipboardHistoryItem) -> ClipboardHistoryRowView {
@@ -567,8 +653,10 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func filteredItems() -> [ClipboardHistoryItem] {
         let search = searchField.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        refreshSearchIndexCache()
-        return controller.history.filter { item in
+        let history = controller.history
+        pruneSearchIndexCache(for: history)
+        scheduleSearchIndexPrebuild(for: history)
+        return history.filter { item in
             if selectedApplication == Filter.favorites && !item.isFavorite {
                 return false
             }
@@ -582,15 +670,60 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         }
     }
 
-    private func refreshSearchIndexCache() {
-        let validIDs = Set(controller.history.map(\.id))
+    private func pruneSearchIndexCache(for items: [ClipboardHistoryItem]) {
+        let validIDs = Set(items.map(\.id))
         searchIndexByID = searchIndexByID.filter { validIDs.contains($0.key) }
-        for item in controller.history where searchIndexByID[item.id] == nil {
-            searchIndexByID[item.id] = makeSearchIndex(for: item)
-        }
     }
 
-    private func makeSearchIndex(for item: ClipboardHistoryItem) -> String {
+    private func scheduleSearchIndexPrebuild(for items: [ClipboardHistoryItem]) {
+        let missingItems = items.filter { searchIndexByID[$0.id] == nil }
+        guard !missingItems.isEmpty else {
+            searchIndexPrebuildWorkItem?.cancel()
+            searchIndexPrebuildWorkItem = nil
+            return
+        }
+        guard searchIndexPrebuildWorkItem == nil else { return }
+
+        searchIndexGeneration += 1
+        let generation = searchIndexGeneration
+        var workItem: DispatchWorkItem!
+        workItem = DispatchWorkItem { [weak self] in
+            var chunk: [UUID: String] = [:]
+            for (index, item) in missingItems.enumerated() {
+                guard workItem.isCancelled == false else { return }
+                chunk[item.id] = Self.makeSearchIndex(for: item)
+                let shouldFlush = chunk.count >= Layout.searchIndexBatchSize || index == missingItems.count - 1
+                guard shouldFlush else { continue }
+
+                let readyChunk = chunk
+                chunk.removeAll(keepingCapacity: true)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.searchIndexGeneration == generation,
+                          self.searchIndexPrebuildWorkItem?.isCancelled == false else {
+                        return
+                    }
+                    self.searchIndexByID.merge(readyChunk) { _, new in new }
+                    if !self.searchField.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.scheduleListRebuild()
+                    }
+                }
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.searchIndexGeneration == generation,
+                      self.searchIndexPrebuildWorkItem?.isCancelled == false else {
+                    return
+                }
+                self.searchIndexPrebuildWorkItem = nil
+            }
+        }
+        searchIndexPrebuildWorkItem = workItem
+        searchIndexQueue.asyncAfter(deadline: .now() + Layout.searchIndexPrebuildDelay, execute: workItem)
+    }
+
+    private static func makeSearchIndex(for item: ClipboardHistoryItem) -> String {
         var fields = [
             item.previewText,
             item.sourceApplicationName,
@@ -615,6 +748,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     @objc private func listScrollViewDidScroll() {
+        updateRenderedRowsForScroll()
         updateVisibleShortcutHints()
     }
 
@@ -1503,6 +1637,7 @@ private final class ClipboardHistoryRowView: NSView {
     private weak var timeLabel: NSTextField?
     private weak var favoriteIcon: NSImageView?
     private weak var shortcutBadge: ClipboardShortcutBadgeView?
+    private weak var thumbnailImageView: NSImageView?
 
     init(
         item: ClipboardHistoryItem,
@@ -1595,6 +1730,7 @@ private final class ClipboardHistoryRowView: NSView {
         timeLabel?.stringValue = Self.displayDateText(for: item.createdAt)
         favoriteIcon?.image = item.isFavorite ? MacAssistantUI.symbol("star.fill", pointSize: 11, weight: .semibold) : nil
         favoriteIcon?.isHidden = !item.isFavorite
+        loadPreviewThumbnailIfNeeded()
         updateSelectionAppearance()
     }
 
@@ -1703,19 +1839,21 @@ private final class ClipboardHistoryRowView: NSView {
         textStack.addArrangedSubview(detail)
         detailLabel = detail
 
-        if let image = previewImage() {
+        if hasImagePreview() {
             let stack = NSStackView()
             stack.orientation = .horizontal
             stack.alignment = .centerY
             stack.spacing = 8
             stack.translatesAutoresizingMaskIntoConstraints = false
 
-            let imageView = NSImageView(image: image)
+            let imageView = NSImageView(image: Self.thumbnailPlaceholderImage)
             imageView.imageScaling = .scaleProportionallyUpOrDown
             imageView.imageAlignment = .alignCenter
+            imageView.contentTintColor = .tertiaryLabelColor
             imageView.wantsLayer = true
             imageView.layer?.cornerRadius = 6
             imageView.layer?.masksToBounds = true
+            imageView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.58).cgColor
             imageView.translatesAutoresizingMaskIntoConstraints = false
             imageView.widthAnchor.constraint(equalToConstant: 54).isActive = true
             imageView.heightAnchor.constraint(equalToConstant: 38).isActive = true
@@ -1723,6 +1861,8 @@ private final class ClipboardHistoryRowView: NSView {
             stack.addArrangedSubview(textStack)
             stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            thumbnailImageView = imageView
+            loadPreviewThumbnailIfNeeded()
             return stack
         }
 
@@ -1770,7 +1910,34 @@ private final class ClipboardHistoryRowView: NSView {
         return image
     }
 
-    private func previewImage() -> NSImage? {
+    private func hasImagePreview() -> Bool {
+        Self.imageStoredType(in: item) != nil
+    }
+
+    private func loadPreviewThumbnailIfNeeded() {
+        guard let imageView = thumbnailImageView else { return }
+        guard let storedType = Self.imageStoredType(in: item) else {
+            imageView.image = nil
+            return
+        }
+        if let cached = Self.thumbnailCache[item.id] {
+            imageView.image = cached
+            return
+        }
+
+        imageView.image = Self.thumbnailPlaceholderImage
+        imageView.contentTintColor = .tertiaryLabelColor
+        Self.requestThumbnail(id: item.id, storedType: storedType) { [weak self] id, image in
+            guard let self,
+                  self.item.id == id,
+                  let image else {
+                return
+            }
+            self.thumbnailImageView?.image = image
+        }
+    }
+
+    private static func imageStoredType(in item: ClipboardHistoryItem) -> ClipboardStoredType? {
         let imageTypes = [
             NSPasteboard.PasteboardType.png.rawValue,
             NSPasteboard.PasteboardType.tiff.rawValue,
@@ -1778,16 +1945,11 @@ private final class ClipboardHistoryRowView: NSView {
             "public.heic"
         ]
         for type in imageTypes {
-            if let stored = item.storedTypes.first(where: { $0.type == type }),
-               let image = NSImage(data: stored.data) {
-                return image
+            if let stored = item.storedTypes.first(where: { $0.type == type }) {
+                return stored
             }
         }
-        if let stored = item.storedTypes.first(where: { $0.type.lowercased().contains("image") }),
-           let image = NSImage(data: stored.data) {
-            return image
-        }
-        return nil
+        return item.storedTypes.first { $0.type.lowercased().contains("image") }
     }
 
     @objc private func deleteItem() {
@@ -1864,4 +2026,58 @@ private final class ClipboardHistoryRowView: NSView {
     }()
 
     private static var appIconCache: [String: NSImage] = [:]
+    private static let thumbnailQueue = DispatchQueue(label: "com.fusheng.mac-tool.clipboard.thumbnail", qos: .utility)
+    private static var thumbnailCache: [UUID: NSImage] = [:]
+    private static var thumbnailCacheOrder: [UUID] = []
+    private static var thumbnailRequests = Set<UUID>()
+    private static let thumbnailCacheLimit = 160
+
+    private static let thumbnailPlaceholderImage: NSImage = {
+        NSImage(systemSymbolName: "photo", accessibilityDescription: "图片") ?? NSImage()
+    }()
+
+    private static func requestThumbnail(id: UUID, storedType: ClipboardStoredType, completion: @escaping (UUID, NSImage?) -> Void) {
+        if let cached = thumbnailCache[id] {
+            completion(id, cached)
+            return
+        }
+        guard !thumbnailRequests.contains(id) else { return }
+        thumbnailRequests.insert(id)
+
+        let data = storedType.data
+        thumbnailQueue.async {
+            let cgImage = makeThumbnailCGImage(from: data)
+            DispatchQueue.main.async {
+                thumbnailRequests.remove(id)
+                let image = cgImage.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+                if let image {
+                    cacheThumbnail(image, for: id)
+                }
+                completion(id, image)
+            }
+        }
+    }
+
+    private static func makeThumbnailCGImage(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: false,
+            kCGImageSourceThumbnailMaxPixelSize: 108
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    private static func cacheThumbnail(_ image: NSImage, for id: UUID) {
+        thumbnailCache[id] = image
+        thumbnailCacheOrder.removeAll { $0 == id }
+        thumbnailCacheOrder.append(id)
+        while thumbnailCacheOrder.count > thumbnailCacheLimit {
+            let removed = thumbnailCacheOrder.removeFirst()
+            thumbnailCache[removed] = nil
+        }
+    }
 }

@@ -154,6 +154,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var pendingDDCWriteValues: [DDCQuickSetting: Int] = [:]
     private var ddcWriteInFlight: Set<DDCQuickSetting> = []
     private var ddcLastWriteTimes: [DDCQuickSetting: Date] = [:]
+    private var pendingDisplayStateRefreshWorkItem: DispatchWorkItem?
     private weak var ddcStatusLabel: NSTextField?
     private var systemOverviewTimer: Timer?
     private let systemOverviewQueue = DispatchQueue(label: "com.fusheng.mac-tool.system-overview", qos: .utility)
@@ -227,6 +228,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     deinit {
         stopSystemOverviewTimer()
+        pendingDisplayStateRefreshWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -246,6 +248,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     func windowWillClose(_ notification: Notification) {
         stopSystemOverviewTimer()
         isSystemOverviewSampling = false
+        pendingDisplayStateRefreshWorkItem?.cancel()
         cancelPendingDDCWrites()
         if pendingDisplayModeConfirmation != nil {
             restorePendingDisplayMode(reason: "设置窗口关闭")
@@ -498,6 +501,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         selectedDisplayIndex = min(selectedDisplayIndex, max(0, scannedDisplays.count - 1))
         rebuildDisplayTabs()
         reloadCurrentPage()
+    }
+
+    private func refreshDisplaysAfterStateChange() {
+        refreshDisplays()
+
+        pendingDisplayStateRefreshWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.refreshDisplays()
+        }
+        pendingDisplayStateRefreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: workItem)
     }
 
     private func mergedDisplayList(liveDisplays: [DisplaySnapshot]) -> [DisplaySnapshot] {
@@ -2417,7 +2431,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
 
         onSave()
-        reloadSelectedDisplay()
+        refreshDisplaysAfterStateChange()
     }
 
     private func confirmCloseDisplay(profile: DisplayProfile, display: DisplaySnapshot) -> Bool {
@@ -2471,17 +2485,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 do {
                     try self.disconnect.reconnect(profile: testProfile, fallbackDisplay: closedDisplay)
                     self.statuses.set(.detected, profileId: testProfile.id, message: "测试恢复完成")
-                    self.refreshDisplays()
+                    self.refreshDisplaysAfterStateChange()
                 } catch {
                     self.statuses.set(.reconnectFailed, profileId: testProfile.id, message: error.localizedDescription)
                     self.showAlert(title: "测试恢复失败", message: error.localizedDescription)
-                    self.refreshDisplays()
+                    self.refreshDisplaysAfterStateChange()
                 }
             }
-            reloadSelectedDisplay()
+            refreshDisplaysAfterStateChange()
         } catch {
             showAlert(title: "无法测试关闭显示器", message: error.localizedDescription)
-            reloadSelectedDisplay()
+            refreshDisplaysAfterStateChange()
         }
     }
 
