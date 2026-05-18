@@ -48,6 +48,17 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$EXTENSION_MACOS_DIR"
 cp "$ROOT_DIR/.build/release/mac-tool" "$MACOS_DIR/mac-tool"
 cp "$ROOT_DIR/.build/release/mac-tool-finder-sync" "$EXTENSION_MACOS_DIR/mac-tool-finder-sync"
 ditto "$SPARKLE_FRAMEWORK_SOURCE" "$FRAMEWORKS_DIR/Sparkle.framework"
+SPARKLE_RESOURCES_DIR="$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Resources"
+SPARKLE_ZH_CN_STRINGS="$SPARKLE_RESOURCES_DIR/zh_CN.lproj/Sparkle.strings"
+if [[ -f "$SPARKLE_ZH_CN_STRINGS" ]]; then
+    for sparkle_strings in "$SPARKLE_RESOURCES_DIR"/*.lproj/Sparkle.strings; do
+        [[ "$sparkle_strings" == "$SPARKLE_ZH_CN_STRINGS" ]] && continue
+        cp "$SPARKLE_ZH_CN_STRINGS" "$sparkle_strings"
+    done
+else
+    echo "Sparkle.framework 缺少 zh_CN 本地化资源，无法统一更新弹窗语言。" >&2
+    exit 1
+fi
 if [[ -n "$MAC_TOOL_RESOURCE_BUNDLE" ]]; then
     ditto "$MAC_TOOL_RESOURCE_BUNDLE" "$RESOURCES_DIR/$(basename "$MAC_TOOL_RESOURCE_BUNDLE")"
 fi
@@ -73,6 +84,12 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
     <string>Mac助手</string>
     <key>CFBundleDisplayName</key>
     <string>Mac助手</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh_CN</string>
+    </array>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>
@@ -156,6 +173,8 @@ cat > "$EXTENSION_CONTENTS_DIR/Info.plist" <<'PLIST'
 <dict>
     <key>CFBundleDisplayName</key>
     <string>Mac助手右键菜单</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
     <key>CFBundleExecutable</key>
     <string>mac-tool-finder-sync</string>
     <key>CFBundleIdentifier</key>
@@ -164,6 +183,10 @@ cat > "$EXTENSION_CONTENTS_DIR/Info.plist" <<'PLIST'
     <string>6.0</string>
     <key>CFBundleName</key>
     <string>mac-tool-finder-sync</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh_CN</string>
+    </array>
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleShortVersionString</key>
