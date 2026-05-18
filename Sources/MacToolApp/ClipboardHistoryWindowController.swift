@@ -49,6 +49,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private var quickLookItem: ClipboardQuickLookItem?
     private var quickLookCleanupURL: URL?
     private var quickLookKeyMonitor: Any?
+    private var ignoreOutsideClicksUntil: TimeInterval = 0
 
     init(controller: ClipboardHistoryController) {
         self.controller = controller
@@ -88,10 +89,11 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     func showPanel() {
+        ignoreOutsideClicksUntil = Date.timeIntervalSinceReferenceDate + 0.35
         resetPanelSize()
         positionAtTopRight()
-        window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(nil)
         installOutsideClickMonitors()
         clearSelection()
@@ -876,6 +878,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func closeIfClickedOutside(localEvent event: NSEvent) {
         guard !isPinned, window?.isVisible == true else { return }
+        guard Date.timeIntervalSinceReferenceDate >= ignoreOutsideClicksUntil else { return }
         if event.window !== window {
             window?.orderOut(nil)
         }
@@ -885,6 +888,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         guard !isPinned,
               let window,
               window.isVisible else { return }
+        guard Date.timeIntervalSinceReferenceDate >= ignoreOutsideClicksUntil else { return }
         if !window.frame.contains(event.locationInWindow) {
             window.orderOut(nil)
         }
@@ -1393,6 +1397,10 @@ private final class AppFilterButton: NSControl {
         fatalError("未实现 init(coder:)")
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     override var intrinsicContentSize: NSSize {
         let width = (titleText as NSString).size(withAttributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold)
@@ -1631,6 +1639,10 @@ private final class ClipboardHistoryRowView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 
     var itemID: UUID {
