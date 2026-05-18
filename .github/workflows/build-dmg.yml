@@ -114,9 +114,12 @@ jobs:
         if: github.ref_type == 'tag'
         uses: actions/upload-pages-artifact@v3
         with:
+          name: sparkle-appcast-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/pages
 
       - name: Deploy Sparkle appcast to GitHub Pages
         id: deployment
         if: github.ref_type == 'tag'
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: sparkle-appcast-${{ github.run_id }}-${{ github.run_attempt }}
