@@ -172,7 +172,7 @@ final class MenuBarController {
                 self?.onConfigurationChanged()
                 self?.rebuildMenu()
             } onClose: {
-                NSApp.setActivationPolicy(.regular)
+                NSApp.setActivationPolicy(.accessory)
             }
         }
         if let page {
