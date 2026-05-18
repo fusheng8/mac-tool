@@ -25,6 +25,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private enum GeneralSettingsAction: Int {
+        case checkForUpdates
         case exportConfig
         case importConfig
         case iCloudBackup
@@ -103,6 +104,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let ddcWriteThrottleInterval: TimeInterval = 0.12
     private let onSave: () -> Void
     private let onClose: () -> Void
+    private let onCheckForUpdates: () -> Void
 
     private var profiles: [DisplayProfile]
     private var scannedDisplays: [DisplaySnapshot] = []
@@ -176,6 +178,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         disconnect: SoftDisconnectController,
         recovery: RecoveryManager,
         statuses: RuntimeStatusStore,
+        onCheckForUpdates: @escaping () -> Void = {},
         onSave: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
@@ -184,6 +187,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         self.disconnect = disconnect
         self.recovery = recovery
         self.statuses = statuses
+        self.onCheckForUpdates = onCheckForUpdates
         self.onSave = onSave
         self.onClose = onClose
         self.profiles = store.profiles
@@ -799,6 +803,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             contentStack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
+        contentStack.addArrangedSubview(versionSection())
         contentStack.addArrangedSubview(configManagementSection())
         contentStack.addArrangedSubview(iCloudSettingsSection())
         contentStack.addArrangedSubview(permissionsSection())
@@ -1374,6 +1379,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             ),
             hintRow("当前配置文件：\(AppPaths.configURL.path)")
         ])
+    }
+
+    private func versionSection() -> NSView {
+        return section(title: "版本", rows: [
+            settingsActionRow(
+                title: "当前版本",
+                detail: currentVersionText(),
+                buttons: [
+                    settingsActionButton(title: "检测更新", symbolName: "arrow.clockwise", action: .checkForUpdates)
+                ]
+            )
+        ])
+    }
+
+    private func currentVersionText() -> String {
+        let bundle = Bundle.main
+        let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
+        let build = bundle.infoDictionary?["CFBundleVersion"] as? String ?? "未知"
+        return "Mac助手 \(version) (\(build))"
     }
 
     private func iCloudSettingsSection() -> NSView {
@@ -3023,6 +3047,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     @objc private func generalSettingsActionPressed(_ sender: MacTextButton) {
         guard let action = GeneralSettingsAction(rawValue: sender.tag) else { return }
         switch action {
+        case .checkForUpdates:
+            onCheckForUpdates()
         case .exportConfig:
             exportConfig()
         case .importConfig:

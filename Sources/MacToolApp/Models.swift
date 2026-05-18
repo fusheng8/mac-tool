@@ -1045,6 +1045,8 @@ struct ClipboardContentMetadata: Codable, Hashable {
     var pasteboardTypes: [String]
     var imagePixelWidth: Int?
     var imagePixelHeight: Int?
+    var thumbnailFileName: String?
+    var contentByteCount: Int?
 
     static let empty = ClipboardContentMetadata(
         contentType: "",
@@ -1053,7 +1055,9 @@ struct ClipboardContentMetadata: Codable, Hashable {
         fileNames: [],
         pasteboardTypes: [],
         imagePixelWidth: nil,
-        imagePixelHeight: nil
+        imagePixelHeight: nil,
+        thumbnailFileName: nil,
+        contentByteCount: nil
     )
 }
 

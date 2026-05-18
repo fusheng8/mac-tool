@@ -249,6 +249,22 @@ APP_VERSION=0.1.1 PACKAGE_ONLY=1 scripts/build_dmg.sh
 
 仓库内置 GitHub Actions 工作流 `.github/workflows/build-dmg.yml`，会在推送到 `main` / `master`、创建 Pull Request、推送 `0.1.0` 这类版本号标签或手动触发时，在 macOS runner 上打包 DMG，并把 `.build/*.dmg` 上传为 workflow artifact。推送版本号标签时，还会自动创建或更新同名 GitHub Release 并上传 DMG。
 
+### 在线更新
+
+Mac助手使用 Sparkle 2 检查并安装后续更新。更新包仍通过 GitHub Release 分发，Sparkle appcast 通过 GitHub Pages 暴露：
+
+```text
+https://fusheng8.github.io/mac-tool/appcast.xml
+```
+
+项目没有使用 Developer ID 签名和 notarization，因此首次安装仍需要用户手动允许；安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
+
+```text
+SPARKLE_PRIVATE_KEY
+```
+
+私钥本地文件默认放在已忽略的 `private/sparkle_private_key`，不要提交到仓库。GitHub Pages 需要在仓库设置中启用，并选择 GitHub Actions 作为 Pages 来源。
+
 默认使用 ad-hoc 签名。如果你希望辅助功能授权在多次重建后更稳定，建议指定固定的本机代码签名身份：
 
 ```bash

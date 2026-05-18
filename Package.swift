@@ -11,6 +11,10 @@ let package = Package(
         .executable(name: "mac-tool", targets: ["MacToolApp"]),
         .executable(name: "mac-tool-finder-sync", targets: ["MacToolFinderSync"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/groue/GRDB.swift.git", .upToNextMajor(from: "7.10.0")),
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", .upToNextMajor(from: "2.9.0"))
+    ],
     targets: [
         .target(
             name: "DDCBackend",
@@ -29,7 +33,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "MacToolApp",
-            dependencies: ["DDCBackend"],
+            dependencies: [
+                "DDCBackend",
+                .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             resources: [
                 .process("Resources")
             ],
@@ -56,6 +64,10 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("FinderSync")
             ]
+        ),
+        .testTarget(
+            name: "MacToolAppTests",
+            dependencies: ["MacToolApp"]
         )
     ]
 )

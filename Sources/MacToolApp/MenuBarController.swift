@@ -11,6 +11,7 @@ final class MenuBarController {
     private let statuses: RuntimeStatusStore
     private let clipboard: ClipboardHistoryController
     private let onOpenPortManagement: () -> Void
+    private let onCheckForUpdates: () -> Void
     private let onConfigurationChanged: () -> Void
     private let loginItems = LoginItemController()
     private var settingsWindowController: SettingsWindowController?
@@ -24,6 +25,7 @@ final class MenuBarController {
         statuses: RuntimeStatusStore,
         clipboard: ClipboardHistoryController,
         onOpenPortManagement: @escaping () -> Void = {},
+        onCheckForUpdates: @escaping () -> Void = {},
         onConfigurationChanged: @escaping () -> Void = {}
     ) {
         self.store = store
@@ -34,6 +36,7 @@ final class MenuBarController {
         self.statuses = statuses
         self.clipboard = clipboard
         self.onOpenPortManagement = onOpenPortManagement
+        self.onCheckForUpdates = onCheckForUpdates
         self.onConfigurationChanged = onConfigurationChanged
         configureStatusButton()
         rebuildMenu()
@@ -57,6 +60,7 @@ final class MenuBarController {
         let loginItem = actionItem("开机自启", #selector(toggleLoginItem), nil)
         loginItem.state = loginItems.isEnabled ? .on : .off
         menu.addItem(loginItem)
+        menu.addItem(actionItem("检查更新", #selector(checkForUpdates), nil))
         menu.addItem(.separator())
         menu.addItem(quitItem())
         statusItem.menu = menu
@@ -159,6 +163,8 @@ final class MenuBarController {
                 recovery: recovery,
                 statuses: statuses
             ) { [weak self] in
+                self?.onCheckForUpdates()
+            } onSave: { [weak self] in
                 self?.store.reload()
                 self?.clipboard.updateConfiguration()
                 self?.onConfigurationChanged()
@@ -186,6 +192,10 @@ final class MenuBarController {
             showAlert(title: "登录启动设置失败", message: error.localizedDescription)
         }
         rebuildMenu()
+    }
+
+    @objc private func checkForUpdates() {
+        onCheckForUpdates()
     }
 
     private func showAlert(title: String, message: String) {

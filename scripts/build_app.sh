@@ -8,6 +8,7 @@ INSTALLED_APP_DIR="$INSTALL_DIR/Mac助手.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 PLUGINS_DIR="$CONTENTS_DIR/PlugIns"
 EXTENSION_DIR="$PLUGINS_DIR/mac-tool-finder-sync.appex"
 EXTENSION_CONTENTS_DIR="$EXTENSION_DIR/Contents"
@@ -16,6 +17,7 @@ CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 PACKAGE_ONLY="${PACKAGE_ONLY:-0}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 APP_BUILD_VERSION="${APP_BUILD_VERSION:-$APP_VERSION}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-flJcsKYBq5Bqqw5S/h3r9CatV/LhrhY/rke2zOhL9E4=}"
 
 if [[ ! "$APP_VERSION" =~ '^[0-9]+(\.[0-9]+){2}$' ]]; then
     echo "APP_VERSION 必须是 x.y.z 格式，例如 0.1.0" >&2
@@ -31,10 +33,21 @@ cd "$ROOT_DIR"
 swift build -c release --product mac-tool
 swift build -c release --product mac-tool-finder-sync
 
+SPARKLE_FRAMEWORK_SOURCE="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK_SOURCE" ]]; then
+    SPARKLE_FRAMEWORK_SOURCE="$(find "$ROOT_DIR/.build/artifacts" -path "*/Sparkle.xcframework/*/Sparkle.framework" -type d -print -quit 2>/dev/null || true)"
+fi
+if [[ -z "$SPARKLE_FRAMEWORK_SOURCE" ]]; then
+    echo "未找到 Sparkle.framework，请先确认 SwiftPM 已解析 Sparkle 依赖。" >&2
+    exit 1
+fi
+
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$EXTENSION_MACOS_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$EXTENSION_MACOS_DIR"
 cp "$ROOT_DIR/.build/release/mac-tool" "$MACOS_DIR/mac-tool"
 cp "$ROOT_DIR/.build/release/mac-tool-finder-sync" "$EXTENSION_MACOS_DIR/mac-tool-finder-sync"
+ditto "$SPARKLE_FRAMEWORK_SOURCE" "$FRAMEWORKS_DIR/Sparkle.framework"
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/mac-tool" 2>/dev/null || true
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 cp "$ROOT_DIR/Resources/StatusIconRingTemplate.png" "$RESOURCES_DIR/StatusIconRingTemplate.png"
 cp "$ROOT_DIR/Resources/StatusIconRingGray.png" "$RESOURCES_DIR/StatusIconRingGray.png"
@@ -69,6 +82,18 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
     <key>LSUIElement</key>
     <true/>
     <key>LSMultipleInstancesProhibited</key>
+    <true/>
+    <key>SUFeedURL</key>
+    <string>https://fusheng8.github.io/mac-tool/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>__SPARKLE_PUBLIC_ED_KEY__</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
@@ -168,13 +193,16 @@ PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD_VERSION" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$EXTENSION_CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD_VERSION" "$EXTENSION_CONTENTS_DIR/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $SPARKLE_PUBLIC_ED_KEY" "$CONTENTS_DIR/Info.plist"
 
+codesign --force --deep --sign "$CODESIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
 codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT_DIR/scripts/finder_sync_extension.entitlements" "$EXTENSION_DIR"
 codesign --force --sign "$CODESIGN_IDENTITY" "$APP_DIR"
 
 echo "已创建 $APP_DIR"
 echo "版本号：$APP_VERSION ($APP_BUILD_VERSION)"
 echo "签名身份：$CODESIGN_IDENTITY"
+echo "Sparkle：$SPARKLE_FRAMEWORK_SOURCE"
 
 if [[ "$PACKAGE_ONLY" == "1" ]]; then
     echo "已跳过安装和 Finder Sync 注册"

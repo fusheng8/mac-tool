@@ -3,6 +3,7 @@ import CoreServices
 import CoreSpotlight
 import Darwin
 import Foundation
+import Sparkle
 import UniformTypeIdentifiers
 
 private extension Notification.Name {
@@ -216,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recovery: RecoveryManager!
     private var menuBar: MenuBarController!
     private var clipboard: ClipboardHistoryController!
+    private var updaterController: SPUStandardUpdaterController!
     private let spotlightIndexer = SpotlightActionIndexer()
     private var didIndexSpotlightActions = false
     private var didStartDisplayRestoreWatchdog = false
@@ -261,6 +263,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         automation = AutomationController(store: store, disconnect: disconnect)
         recovery = RecoveryManager(store: store, disconnect: disconnect, automation: automation, statuses: statuses)
         clipboard = ClipboardHistoryController(store: store)
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+        if store.contextMenu.enabled {
+            SystemCapabilities.registerBundledFinderExtensionIfAvailable()
+        }
         menuBar = MenuBarController(
             store: store,
             detector: detector,
@@ -271,6 +281,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clipboard: clipboard,
             onOpenPortManagement: { [weak self] in
                 self?.indexSpotlightActionsIfNeeded()
+            },
+            onCheckForUpdates: { [weak self] in
+                self?.updaterController.checkForUpdates(nil)
             },
             onConfigurationChanged: { [weak self] in
                 self?.automation.updateBackgroundActivity()

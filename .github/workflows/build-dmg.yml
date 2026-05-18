@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build-dmg:
@@ -74,3 +76,47 @@ jobs:
               --title "$GITHUB_REF_NAME" \
               --generate-notes
           fi
+
+      - name: Generate Sparkle appcast
+        if: github.ref_type == 'tag'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "Missing SPARKLE_PRIVATE_KEY repository secret" >&2
+            exit 1
+          fi
+
+          key_path="$RUNNER_TEMP/sparkle_private_key"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
+
+          sparkle_bin="$(find "$PWD/.build" -path "*/Sparkle/bin/generate_appcast" -type f -print -quit)"
+          if [[ -z "$sparkle_bin" ]]; then
+            echo "Sparkle generate_appcast tool was not found" >&2
+            exit 1
+          fi
+
+          appcast_dir="$PWD/.build/sparkle-appcast"
+          mkdir -p "$appcast_dir"
+          cp "${{ steps.dmg.outputs.path }}" "$appcast_dir/MacTool.dmg"
+
+          "$sparkle_bin" \
+            --ed-key-file "$key_path" \
+            --download-url-prefix "https://github.com/fusheng8/mac-tool/releases/download/$GITHUB_REF_NAME/" \
+            "$appcast_dir"
+
+          test -f "$appcast_dir/appcast.xml"
+          mkdir -p "$PWD/.build/pages"
+          cp "$appcast_dir/appcast.xml" "$PWD/.build/pages/appcast.xml"
+
+      - name: Upload GitHub Pages artifact
+        if: github.ref_type == 'tag'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .build/pages
+
+      - name: Deploy Sparkle appcast to GitHub Pages
+        id: deployment
+        if: github.ref_type == 'tag'
+        uses: actions/deploy-pages@v4
