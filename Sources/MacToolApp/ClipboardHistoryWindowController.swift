@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import ImageIO
 import QuickLookUI
 
 final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
@@ -11,8 +10,6 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         static let rowHeight: CGFloat = 66
         static let rowSpacing: CGFloat = 2
         static let rowOverscan = 4
-        static let searchIndexBatchSize = 60
-        static let searchIndexPrebuildDelay: TimeInterval = 0.18
         static let deferredListRebuildDelay: TimeInterval = 0.018
     }
 
@@ -38,7 +35,6 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private var selectedItemID: UUID?
     private var displayedItems: [ClipboardHistoryItem] = []
     private var rowViewsByID: [UUID: ClipboardHistoryRowView] = [:]
-    private var searchIndexByID: [UUID: String] = [:]
     private let listTopSpacer = NSView()
     private let listBottomSpacer = NSView()
     private var listTopSpacerHeightConstraint: NSLayoutConstraint?
@@ -48,14 +44,12 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private var renderedRange: Range<Int> = 0..<0
     private var pendingListRebuildWorkItem: DispatchWorkItem?
     private var pendingListRebuildID = 0
-    private let searchIndexQueue = DispatchQueue(label: "com.fusheng.mac-tool.clipboard.search-index", qos: .utility)
-    private var searchIndexGeneration = 0
-    private var searchIndexPrebuildWorkItem: DispatchWorkItem?
     private var shortcutHintedItemIDs = Set<UUID>()
     private var isPinned = false
     private var quickLookItem: ClipboardQuickLookItem?
     private var quickLookCleanupURL: URL?
     private var quickLookKeyMonitor: Any?
+    private var ignoreOutsideClicksUntil: TimeInterval = 0
 
     init(controller: ClipboardHistoryController) {
         self.controller = controller
@@ -95,22 +89,24 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     func showPanel() {
+        ignoreOutsideClicksUntil = Date.timeIntervalSinceReferenceDate + 0.35
         resetPanelSize()
         positionAtTopRight()
-        window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(nil)
         installOutsideClickMonitors()
-        renderGeneration += 1
-        let generation = renderGeneration
+        clearSelection()
+        window?.layoutIfNeeded()
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.renderGeneration == generation else { return }
+            guard let self, self.window?.isVisible == true else { return }
             self.rebuildApplicationFilter()
             self.rebuildList()
         }
     }
 
     func reload() {
+        rebuildApplicationFilter()
         rebuildList()
     }
 
@@ -183,7 +179,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
         searchField.placeholder = "搜索剪切板..."
         searchField.onChange = { [weak self] _ in
-            self?.rebuildList()
+            self?.scheduleListRebuild()
         }
         searchField.onKeyCommand = { [weak self] event in
             self?.handleKeyDown(event) ?? false
@@ -411,11 +407,20 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
         let items = filteredItems()
         displayedItems = items
-        ensureSelection(in: items)
+        validateSelection(in: items)
         pruneReusableRows()
         updateFooter()
         if items.isEmpty {
             renderedRange = 0..<0
+            if controller.isLoadingHistory {
+                showEmptyList(
+                    title: "正在加载剪贴板历史",
+                    detail: "历史较多时会先打开面板，再在后台载入内容。",
+                    symbolName: "clock"
+                )
+                updateVisibleShortcutHints()
+                return
+            }
             showEmptyList(
                 title: controller.history.isEmpty ? "暂无剪贴板历史" : "没有匹配结果",
                 detail: controller.history.isEmpty ? "复制内容后会出现在这里。" : "换个关键词或切换到全部应用。",
@@ -556,7 +561,6 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             listStack.removeArrangedSubview(row)
             row.removeFromSuperview()
             rowViewsByID[id] = nil
-            searchIndexByID[id] = nil
             shortcutHintedItemIDs.remove(id)
         }
     }
@@ -628,6 +632,12 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             onDelete: { [weak self] selected in
                 self?.controller.delete(selected)
                 self?.rebuildApplicationFilter()
+            },
+            thumbnailURL: { [weak self] selected in
+                self?.controller.thumbnailURL(for: selected)
+            },
+            requestThumbnail: { [weak self] selected, completion in
+                self?.controller.ensureThumbnail(for: selected, completion: completion)
             }
         )
         return row
@@ -653,86 +663,29 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func filteredItems() -> [ClipboardHistoryItem] {
         let search = searchField.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let history = controller.history
-        pruneSearchIndexCache(for: history)
-        scheduleSearchIndexPrebuild(for: history)
-        return history.filter { item in
+        let source: [ClipboardHistoryItem]
+        if search.isEmpty {
+            source = controller.history
+        } else {
+            let applicationKey = selectedApplication == Filter.allApplications || selectedApplication == Filter.favorites
+                ? nil
+                : selectedApplication
+            source = controller.searchHistory(
+                search,
+                applicationKey: applicationKey,
+                favoritesOnly: selectedApplication == Filter.favorites,
+                limit: controller.configuration.maxHistoryCount
+            )
+        }
+        return source.filter { item in
             if selectedApplication == Filter.favorites && !item.isFavorite {
                 return false
             }
             if selectedApplication != Filter.allApplications && selectedApplication != Filter.favorites && appFilterKey(for: item) != selectedApplication {
                 return false
             }
-            if search.isEmpty {
-                return true
-            }
-            return searchIndexByID[item.id]?.contains(search) == true
+            return true
         }
-    }
-
-    private func pruneSearchIndexCache(for items: [ClipboardHistoryItem]) {
-        let validIDs = Set(items.map(\.id))
-        searchIndexByID = searchIndexByID.filter { validIDs.contains($0.key) }
-    }
-
-    private func scheduleSearchIndexPrebuild(for items: [ClipboardHistoryItem]) {
-        let missingItems = items.filter { searchIndexByID[$0.id] == nil }
-        guard !missingItems.isEmpty else {
-            searchIndexPrebuildWorkItem?.cancel()
-            searchIndexPrebuildWorkItem = nil
-            return
-        }
-        guard searchIndexPrebuildWorkItem == nil else { return }
-
-        searchIndexGeneration += 1
-        let generation = searchIndexGeneration
-        var workItem: DispatchWorkItem!
-        workItem = DispatchWorkItem { [weak self] in
-            var chunk: [UUID: String] = [:]
-            for (index, item) in missingItems.enumerated() {
-                guard workItem.isCancelled == false else { return }
-                chunk[item.id] = Self.makeSearchIndex(for: item)
-                let shouldFlush = chunk.count >= Layout.searchIndexBatchSize || index == missingItems.count - 1
-                guard shouldFlush else { continue }
-
-                let readyChunk = chunk
-                chunk.removeAll(keepingCapacity: true)
-                DispatchQueue.main.async { [weak self] in
-                    guard let self,
-                          self.searchIndexGeneration == generation,
-                          self.searchIndexPrebuildWorkItem?.isCancelled == false else {
-                        return
-                    }
-                    self.searchIndexByID.merge(readyChunk) { _, new in new }
-                    if !self.searchField.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        self.scheduleListRebuild()
-                    }
-                }
-            }
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      self.searchIndexGeneration == generation,
-                      self.searchIndexPrebuildWorkItem?.isCancelled == false else {
-                    return
-                }
-                self.searchIndexPrebuildWorkItem = nil
-            }
-        }
-        searchIndexPrebuildWorkItem = workItem
-        searchIndexQueue.asyncAfter(deadline: .now() + Layout.searchIndexPrebuildDelay, execute: workItem)
-    }
-
-    private static func makeSearchIndex(for item: ClipboardHistoryItem) -> String {
-        var fields = [
-            item.previewText,
-            item.sourceApplicationName,
-            item.plainText,
-            item.metadata.detailText
-        ]
-        fields.append(contentsOf: item.metadata.fileNames)
-        fields.append(contentsOf: item.metadata.sourcePaths)
-        return fields.joined(separator: "\n").lowercased()
     }
 
     private func appFilterKey(for item: ClipboardHistoryItem) -> String {
@@ -925,6 +878,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func closeIfClickedOutside(localEvent event: NSEvent) {
         guard !isPinned, window?.isVisible == true else { return }
+        guard Date.timeIntervalSinceReferenceDate >= ignoreOutsideClicksUntil else { return }
         if event.window !== window {
             window?.orderOut(nil)
         }
@@ -934,6 +888,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         guard !isPinned,
               let window,
               window.isVisible else { return }
+        guard Date.timeIntervalSinceReferenceDate >= ignoreOutsideClicksUntil else { return }
         if !window.frame.contains(event.locationInWindow) {
             window.orderOut(nil)
         }
@@ -1085,21 +1040,18 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         return returnKeyCodes.contains(eventKeyCode) && returnKeyCodes.contains(shortcutKeyCode)
     }
 
-    private func ensureSelection(in items: [ClipboardHistoryItem]) {
-        guard !items.isEmpty else {
+    private func validateSelection(in items: [ClipboardHistoryItem]) {
+        guard let selectedItemID,
+              items.contains(where: { $0.id == selectedItemID }) else {
             selectedItemID = nil
             return
         }
-        if let selectedItemID, items.contains(where: { $0.id == selectedItemID }) {
-            return
-        }
-        selectedItemID = items[0].id
     }
 
     private func pasteSelected(mode: ClipboardPasteMode) -> Bool {
         flushPendingListRebuild()
         let items = displayedItems
-        ensureSelection(in: items)
+        validateSelection(in: items)
         guard let selectedItemID,
               let item = items.first(where: { $0.id == selectedItemID }) else {
             return false
@@ -1111,7 +1063,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private func showSelectedItemContextMenu() -> Bool {
         flushPendingListRebuild()
         let items = displayedItems
-        ensureSelection(in: items)
+        validateSelection(in: items)
         guard let selectedItemID else { return false }
         if let row = rowViewsByID[selectedItemID] {
             row.showContextMenu()
@@ -1128,7 +1080,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private func deleteSelectedItem() -> Bool {
         flushPendingListRebuild()
         let items = displayedItems
-        ensureSelection(in: items)
+        validateSelection(in: items)
         guard let selectedItemID,
               let item = items.first(where: { $0.id == selectedItemID }) else {
             return false
@@ -1151,12 +1103,24 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         flushPendingListRebuild()
         let items = displayedItems
         guard !items.isEmpty else { return false }
-        ensureSelection(in: items)
-        let currentIndex = selectedItemID.flatMap { id in items.firstIndex(where: { $0.id == id }) } ?? 0
-        let targetIndex = min(max(currentIndex + offset, 0), items.count - 1)
-        guard targetIndex != currentIndex else { return true }
+        validateSelection(in: items)
+
+        let targetIndex: Int
+        if let currentIndex = selectedItemID.flatMap({ id in items.firstIndex(where: { $0.id == id }) }) {
+            targetIndex = min(max(currentIndex + offset, 0), items.count - 1)
+            guard targetIndex != currentIndex else { return true }
+        } else {
+            targetIndex = offset < 0 ? items.count - 1 : 0
+        }
+
         selectItem(items[targetIndex].id, scrollToSelection: true)
         return true
+    }
+
+    private func clearSelection() {
+        guard selectedItemID != nil else { return }
+        selectedItemID = nil
+        rowViewsByID.values.forEach { $0.setSelected(false) }
     }
 
     private func selectItem(_ itemID: UUID, scrollToSelection: Bool) {
@@ -1227,7 +1191,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func selectedItem() -> ClipboardHistoryItem? {
         let items = displayedItems
-        ensureSelection(in: items)
+        validateSelection(in: items)
         guard let selectedItemID else { return nil }
         return items.first { $0.id == selectedItemID }
     }
@@ -1348,7 +1312,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     private func quickLookImageData(for item: ClipboardHistoryItem) -> (data: Data, fileExtension: String)? {
-        for storedType in item.storedTypes {
+        for storedType in controller.storedTypes(for: item) {
             let type = storedType.type.lowercased()
             if type == NSPasteboard.PasteboardType.png.rawValue || type.contains("png") {
                 return (storedType.data, "png")
@@ -1431,6 +1395,10 @@ private final class AppFilterButton: NSControl {
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 
     override var intrinsicContentSize: NSSize {
@@ -1625,11 +1593,19 @@ private final class ClipboardShortcutBadgeView: NSView {
 }
 
 private final class ClipboardHistoryRowView: NSView {
+    private enum Metrics {
+        static let accessoryColumnWidth: CGFloat = 52
+        static let timeWidth: CGFloat = 44
+        static let shortcutBadgeWidth: CGFloat = 38
+    }
+
     private var item: ClipboardHistoryItem
     private let onSelect: (ClipboardHistoryItem) -> Void
     private let onPaste: (ClipboardHistoryItem, ClipboardPasteMode) -> Void
     private let onToggleFavorite: (ClipboardHistoryItem) -> Void
     private let onDelete: (ClipboardHistoryItem) -> Void
+    private let thumbnailURL: (ClipboardHistoryItem) -> URL?
+    private let requestThumbnail: (ClipboardHistoryItem, @escaping (UUID, URL?) -> Void) -> Void
     private var isRowSelected: Bool
     private weak var iconView: NSImageView?
     private weak var titleLabel: NSTextField?
@@ -1645,13 +1621,17 @@ private final class ClipboardHistoryRowView: NSView {
         onSelect: @escaping (ClipboardHistoryItem) -> Void,
         onPaste: @escaping (ClipboardHistoryItem, ClipboardPasteMode) -> Void,
         onToggleFavorite: @escaping (ClipboardHistoryItem) -> Void,
-        onDelete: @escaping (ClipboardHistoryItem) -> Void
+        onDelete: @escaping (ClipboardHistoryItem) -> Void,
+        thumbnailURL: @escaping (ClipboardHistoryItem) -> URL?,
+        requestThumbnail: @escaping (ClipboardHistoryItem, @escaping (UUID, URL?) -> Void) -> Void
     ) {
         self.item = item
         self.onSelect = onSelect
         self.onPaste = onPaste
         self.onToggleFavorite = onToggleFavorite
         self.onDelete = onDelete
+        self.thumbnailURL = thumbnailURL
+        self.requestThumbnail = requestThumbnail
         self.isRowSelected = selected
         super.init(frame: .zero)
         build()
@@ -1659,6 +1639,10 @@ private final class ClipboardHistoryRowView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 
     var itemID: UUID {
@@ -1773,6 +1757,7 @@ private final class ClipboardHistoryRowView: NSView {
         accessoryStack.spacing = 5
         accessoryStack.translatesAutoresizingMaskIntoConstraints = false
         accessoryStack.setContentCompressionResistancePriority(.required, for: .horizontal)
+        accessoryStack.setContentHuggingPriority(.required, for: .horizontal)
         addSubview(accessoryStack)
 
         let topMetaRow = NSStackView()
@@ -1795,12 +1780,13 @@ private final class ClipboardHistoryRowView: NSView {
         time.alignment = .right
         time.isSelectable = false
         time.translatesAutoresizingMaskIntoConstraints = false
-        time.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        time.widthAnchor.constraint(equalToConstant: Metrics.timeWidth).isActive = true
         topMetaRow.addArrangedSubview(time)
         self.timeLabel = time
 
         let shortcut = ClipboardShortcutBadgeView()
         shortcut.isHidden = true
+        shortcut.widthAnchor.constraint(equalToConstant: Metrics.shortcutBadgeWidth).isActive = true
         accessoryStack.addArrangedSubview(topMetaRow)
         accessoryStack.addArrangedSubview(shortcut)
         self.shortcutBadge = shortcut
@@ -1815,7 +1801,7 @@ private final class ClipboardHistoryRowView: NSView {
 
             accessoryStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             accessoryStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            accessoryStack.widthAnchor.constraint(lessThanOrEqualToConstant: 58)
+            accessoryStack.widthAnchor.constraint(equalToConstant: Metrics.accessoryColumnWidth)
         ])
         updateSelectionAppearance()
     }
@@ -1911,12 +1897,22 @@ private final class ClipboardHistoryRowView: NSView {
     }
 
     private func hasImagePreview() -> Bool {
-        Self.imageStoredType(in: item) != nil
+        item.metadata.contentType == "图片"
+            || item.metadata.imagePixelWidth != nil
+            || item.metadata.pasteboardTypes.contains { type in
+                let lower = type.lowercased()
+                return lower.contains("image")
+                    || lower.contains("png")
+                    || lower.contains("tiff")
+                    || lower.contains("jpeg")
+                    || lower.contains("jpg")
+                    || lower.contains("heic")
+            }
     }
 
     private func loadPreviewThumbnailIfNeeded() {
         guard let imageView = thumbnailImageView else { return }
-        guard let storedType = Self.imageStoredType(in: item) else {
+        guard hasImagePreview() else {
             imageView.image = nil
             return
         }
@@ -1925,9 +1921,16 @@ private final class ClipboardHistoryRowView: NSView {
             return
         }
 
+        if let url = thumbnailURL(item),
+           let image = NSImage(contentsOf: url) {
+            Self.cacheThumbnail(image, for: item.id)
+            imageView.image = image
+            return
+        }
+
         imageView.image = Self.thumbnailPlaceholderImage
         imageView.contentTintColor = .tertiaryLabelColor
-        Self.requestThumbnail(id: item.id, storedType: storedType) { [weak self] id, image in
+        Self.requestThumbnail(id: item.id, item: item, loader: requestThumbnail) { [weak self] id, image in
             guard let self,
                   self.item.id == id,
                   let image else {
@@ -1935,21 +1938,6 @@ private final class ClipboardHistoryRowView: NSView {
             }
             self.thumbnailImageView?.image = image
         }
-    }
-
-    private static func imageStoredType(in item: ClipboardHistoryItem) -> ClipboardStoredType? {
-        let imageTypes = [
-            NSPasteboard.PasteboardType.png.rawValue,
-            NSPasteboard.PasteboardType.tiff.rawValue,
-            "public.jpeg",
-            "public.heic"
-        ]
-        for type in imageTypes {
-            if let stored = item.storedTypes.first(where: { $0.type == type }) {
-                return stored
-            }
-        }
-        return item.storedTypes.first { $0.type.lowercased().contains("image") }
     }
 
     @objc private func deleteItem() {
@@ -1972,7 +1960,7 @@ private final class ClipboardHistoryRowView: NSView {
         if !item.metadata.detailText.isEmpty {
             return item.metadata.detailText
         }
-        if let firstType = item.storedTypes.first?.type {
+        if let firstType = item.metadata.pasteboardTypes.first {
             return firstType
         }
         return item.sourceApplicationName
@@ -2026,7 +2014,6 @@ private final class ClipboardHistoryRowView: NSView {
     }()
 
     private static var appIconCache: [String: NSImage] = [:]
-    private static let thumbnailQueue = DispatchQueue(label: "com.fusheng.mac-tool.clipboard.thumbnail", qos: .utility)
     private static var thumbnailCache: [UUID: NSImage] = [:]
     private static var thumbnailCacheOrder: [UUID] = []
     private static var thumbnailRequests = Set<UUID>()
@@ -2036,7 +2023,12 @@ private final class ClipboardHistoryRowView: NSView {
         NSImage(systemSymbolName: "photo", accessibilityDescription: "图片") ?? NSImage()
     }()
 
-    private static func requestThumbnail(id: UUID, storedType: ClipboardStoredType, completion: @escaping (UUID, NSImage?) -> Void) {
+    private static func requestThumbnail(
+        id: UUID,
+        item: ClipboardHistoryItem,
+        loader: @escaping (ClipboardHistoryItem, @escaping (UUID, URL?) -> Void) -> Void,
+        completion: @escaping (UUID, NSImage?) -> Void
+    ) {
         if let cached = thumbnailCache[id] {
             completion(id, cached)
             return
@@ -2044,31 +2036,17 @@ private final class ClipboardHistoryRowView: NSView {
         guard !thumbnailRequests.contains(id) else { return }
         thumbnailRequests.insert(id)
 
-        let data = storedType.data
-        thumbnailQueue.async {
-            let cgImage = makeThumbnailCGImage(from: data)
-            DispatchQueue.main.async {
-                thumbnailRequests.remove(id)
-                let image = cgImage.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
-                if let image {
-                    cacheThumbnail(image, for: id)
-                }
-                completion(id, image)
+        loader(item) { resolvedID, url in
+            thumbnailRequests.remove(resolvedID)
+            guard resolvedID == id,
+                  let url,
+                  let image = NSImage(contentsOf: url) else {
+                completion(resolvedID, nil)
+                return
             }
+            cacheThumbnail(image, for: resolvedID)
+            completion(resolvedID, image)
         }
-    }
-
-    private static func makeThumbnailCGImage(from data: Data) -> CGImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            return nil
-        }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: false,
-            kCGImageSourceThumbnailMaxPixelSize: 108
-        ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     private static func cacheThumbnail(_ image: NSImage, for id: UUID) {

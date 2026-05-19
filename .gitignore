@@ -2,6 +2,8 @@
 .swiftpm/
 .DS_Store
 DerivedData/
+private/
+sparkle_private_key*
 AGENTS.md
 agents.md
 .learnings/

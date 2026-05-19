@@ -404,8 +404,7 @@ private final class PermissionAppDragView: NSView, NSDraggingSource {
     }
 
     private static func safeAppIcon() -> NSImage? {
-        let image = Bundle.module.image(forResource: "StatusIconRingGray")
-            ?? Bundle.main.image(forResource: "StatusIconRingGray")
+        let image = Bundle.main.image(forResource: "StatusIconRingGray")
             ?? MacAssistantUI.symbol("sparkles", pointSize: 24, weight: .semibold)
         image?.isTemplate = false
         return image

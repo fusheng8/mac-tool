@@ -23,16 +23,15 @@ final class ClipboardHistoryController {
     ]
 
     private let store: ProfileStore
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let historyStore: ClipboardHistoryStore
     private let processingQueue = DispatchQueue(label: "com.fusheng.mac-tool.clipboard.processing", qos: .utility)
-    private let saveQueue = DispatchQueue(label: "com.fusheng.mac-tool.clipboard.save", qos: .utility)
     private let pasteboard = NSPasteboard.general
     private var timer: Timer?
     private var lastChangeCount: Int
     private var isWritingForPaste = false
     private var hasLoadedHistory = false
-    private var processedHistory: [ClipboardHistoryItem] = []
+    private(set) var isLoadingHistory = false
+    private var historyLoadCompletions: [() -> Void] = []
     private var hotKeyManager: GlobalHotKeyManager?
     private var targetApplication: NSRunningApplication?
     private var windowController: ClipboardHistoryWindowController?
@@ -56,10 +55,8 @@ final class ClipboardHistoryController {
 
     init(store: ProfileStore) {
         self.store = store
+        self.historyStore = ClipboardHistoryStore()
         self.lastChangeCount = NSPasteboard.general.changeCount
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        decoder.dateDecodingStrategy = .iso8601
     }
 
     func start() {
@@ -67,9 +64,15 @@ final class ClipboardHistoryController {
             hotKeyManager?.unregister()
             return
         }
-        ensureHistoryLoaded()
-        pruneExpiredHistory()
         configureHotKey()
+        loadHistoryIfNeeded { [weak self] in
+            guard let self, self.store.clipboard.enabled else { return }
+            self.pruneExpiredHistory()
+            self.scheduleClipboardTimer()
+        }
+    }
+
+    private func scheduleClipboardTimer() {
         timer?.invalidate()
         let interval = TimeInterval(ClipboardConfig.normalizedPollIntervalMilliseconds(store.clipboard.pollIntervalMilliseconds)) / 1000
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -91,14 +94,16 @@ final class ClipboardHistoryController {
         guard store.clipboard.enabled else {
             return
         }
-        ensureHistoryLoaded()
-        pruneExpiredHistory()
-        trimHistoryToConfiguredLimit()
-        start()
+        configureHotKey()
+        loadHistoryIfNeeded { [weak self] in
+            guard let self, self.store.clipboard.enabled else { return }
+            self.pruneExpiredHistory()
+            self.trimHistoryToConfiguredLimit()
+            self.scheduleClipboardTimer()
+        }
     }
 
     func showHistoryPanel() {
-        ensureHistoryLoaded()
         if let app = NSWorkspace.shared.frontmostApplication,
            app.bundleIdentifier != Bundle.main.bundleIdentifier {
             targetApplication = app
@@ -107,6 +112,9 @@ final class ClipboardHistoryController {
             windowController = ClipboardHistoryWindowController(controller: self)
         }
         windowController?.showPanel()
+        loadHistoryIfNeeded { [weak self] in
+            self?.windowController?.reload()
+        }
     }
 
     func paste(_ item: ClipboardHistoryItem, mode: ClipboardPasteMode) {
@@ -115,7 +123,7 @@ final class ClipboardHistoryController {
         switch mode {
         case .formatted:
             let pasteboardItem = NSPasteboardItem()
-            for storedType in item.storedTypes {
+            for storedType in storedTypes(for: item) {
                 pasteboardItem.setData(storedType.data, forType: NSPasteboard.PasteboardType(storedType.type))
             }
             pasteboard.writeObjects([pasteboardItem])
@@ -142,7 +150,7 @@ final class ClipboardHistoryController {
             pasteboard.setString(item.plainText, forType: .string)
         } else {
             let pasteboardItem = NSPasteboardItem()
-            for storedType in item.storedTypes {
+            for storedType in storedTypes(for: item) {
                 pasteboardItem.setData(storedType.data, forType: NSPasteboard.PasteboardType(storedType.type))
             }
             pasteboard.writeObjects([pasteboardItem])
@@ -152,64 +160,84 @@ final class ClipboardHistoryController {
     }
 
     func delete(_ item: ClipboardHistoryItem) {
-        history.removeAll { $0.id == item.id }
-        syncProcessedHistory()
-        saveHistory()
+        updateHistoryFromStore { try $0.delete(item.id) }
     }
 
     func toggleFavorite(_ item: ClipboardHistoryItem) {
-        guard let index = history.firstIndex(where: { $0.id == item.id }) else { return }
-        history[index].isFavorite.toggle()
-        syncProcessedHistory()
-        saveHistory()
+        updateHistoryFromStore { try $0.toggleFavorite(item.id) }
     }
 
     func clearUnfavorited() {
-        history.removeAll { !$0.isFavorite }
-        syncProcessedHistory()
-        saveHistory()
+        updateHistoryFromStore { try $0.clearUnfavorited() }
     }
 
     func clearAll() {
-        history.removeAll()
-        syncProcessedHistory()
-        saveHistory()
+        updateHistoryFromStore { try $0.clearAll() }
     }
 
     func clearItems(kind: ClipboardContentKind) {
-        history.removeAll { contentKind(for: $0) == kind && !$0.isFavorite }
-        syncProcessedHistory()
-        saveHistory()
+        updateHistoryFromStore { try $0.clearItems(kind: kind) }
     }
 
     func countItems(kind: ClipboardContentKind) -> Int {
-        history.filter { contentKind(for: $0) == kind && !$0.isFavorite }.count
+        (try? historyStore.countItems(kind: kind)) ?? history.filter { contentKind(for: $0) == kind && !$0.isFavorite }.count
+    }
+
+    func searchHistory(
+        _ query: String,
+        applicationKey: String? = nil,
+        favoritesOnly: Bool = false,
+        limit: Int? = nil
+    ) -> [ClipboardHistoryItem] {
+        let resolvedLimit = limit ?? store.clipboard.maxHistoryCount
+        do {
+            return try historyStore.search(
+                query,
+                filter: ClipboardHistorySearchFilter(applicationKey: applicationKey, favoritesOnly: favoritesOnly),
+                limit: resolvedLimit
+            )
+        } catch {
+            AppLogger.shared.error("剪切板搜索失败：\(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func storedTypes(for item: ClipboardHistoryItem) -> [ClipboardStoredType] {
+        do {
+            let storedTypes = try historyStore.loadStoredTypes(itemID: item.id)
+            return storedTypes.isEmpty ? item.storedTypes : storedTypes
+        } catch {
+            AppLogger.shared.error("剪切板内容读取失败：\(error.localizedDescription)")
+            return item.storedTypes
+        }
+    }
+
+    func thumbnailURL(for item: ClipboardHistoryItem) -> URL? {
+        historyStore.thumbnailURL(for: item)
+    }
+
+    func ensureThumbnail(for item: ClipboardHistoryItem, completion: @escaping (UUID, URL?) -> Void) {
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            let url: URL?
+            do {
+                url = try self.historyStore.ensureThumbnail(for: item.id)
+            } catch {
+                AppLogger.shared.error("剪切板缩略图生成失败：\(error.localizedDescription)")
+                url = nil
+            }
+            DispatchQueue.main.async {
+                completion(item.id, url)
+            }
+        }
     }
 
     private func trimHistoryToConfiguredLimit() {
-        guard history.count > store.clipboard.maxHistoryCount else { return }
-        while history.count > store.clipboard.maxHistoryCount {
-            guard let removeIndex = history.indices.reversed().first(where: { !history[$0].isFavorite }) else {
-                break
-            }
-            history.remove(at: removeIndex)
-        }
-        syncProcessedHistory()
-        saveHistory()
+        reloadHistoryFromStore()
     }
 
     private func pruneExpiredHistory() {
-        let days = store.clipboard.retentionDays
-        guard days > 0,
-              let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) else {
-            return
-        }
-        let originalCount = history.count
-        history.removeAll { !$0.isFavorite && $0.createdAt < cutoff }
-        if history.count != originalCount {
-            syncProcessedHistory()
-            saveHistory()
-        }
+        reloadHistoryFromStore()
     }
 
     private func configureHotKey() {
@@ -227,6 +255,10 @@ final class ClipboardHistoryController {
 
     private func pollPasteboard() {
         guard store.clipboard.enabled, pasteboard.changeCount != lastChangeCount else { return }
+        guard hasLoadedHistory else {
+            loadHistoryIfNeeded()
+            return
+        }
         lastChangeCount = pasteboard.changeCount
         guard !isWritingForPaste else { return }
         guard !store.clipboard.recordingPaused else { return }
@@ -239,36 +271,19 @@ final class ClipboardHistoryController {
 
         processingQueue.async { [weak self] in
             guard let self,
-                  var item = self.makeHistoryItem(from: capturedItem) else { return }
-            var updatedHistory = self.prunedHistory(self.processedHistory, retentionDays: retentionDays)
-            let duplicatedFavorite = updatedHistory.contains { existing in
-                self.isSameClipboardContent(existing, item) && existing.isFavorite
+                  let item = self.makeHistoryItem(from: capturedItem) else { return }
+            let updatedHistory: [ClipboardHistoryItem]
+            do {
+                updatedHistory = try self.historyStore.insert(item, maxHistoryCount: maxHistoryCount, retentionDays: retentionDays)
+            } catch {
+                AppLogger.shared.error("剪切板历史写入失败：\(error.localizedDescription)")
+                return
             }
-            if duplicatedFavorite {
-                item.isFavorite = true
-            }
-            updatedHistory.removeAll { existing in
-                self.isSameClipboardContent(existing, item)
-            }
-            updatedHistory.insert(item, at: 0)
-            updatedHistory = self.trimmedHistory(updatedHistory, maxHistoryCount: maxHistoryCount)
-            self.processedHistory = updatedHistory
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.history = updatedHistory
-                self.saveHistory(updatedHistory)
             }
-        }
-    }
-
-    private func isSameClipboardContent(_ lhs: ClipboardHistoryItem, _ rhs: ClipboardHistoryItem) -> Bool {
-        guard lhs.plainText == rhs.plainText,
-              lhs.storedTypes.count == rhs.storedTypes.count else {
-            return false
-        }
-        return zip(lhs.storedTypes, rhs.storedTypes).allSatisfy { left, right in
-            left.type == right.type && left.data == right.data
         }
     }
 
@@ -400,7 +415,9 @@ final class ClipboardHistoryController {
             fileNames: fileNames,
             pasteboardTypes: typeNames,
             imagePixelWidth: imageSize?.width,
-            imagePixelHeight: imageSize?.height
+            imagePixelHeight: imageSize?.height,
+            thumbnailFileName: nil,
+            contentByteCount: storedTypes.reduce(0) { $0 + $1.data.count }
         )
     }
 
@@ -549,81 +566,73 @@ final class ClipboardHistoryController {
         }
     }
 
-    private func loadHistory() {
-        guard let data = try? Data(contentsOf: AppPaths.clipboardHistoryURL),
-              let decoded = try? decoder.decode([ClipboardHistoryItem].self, from: data) else {
-            history = []
-            processedHistory = []
-            hasLoadedHistory = true
+    private func loadHistoryIfNeeded(completion: (() -> Void)? = nil) {
+        if hasLoadedHistory {
+            completion?()
             return
         }
-        history = decoded
-        processedHistory = decoded
-        hasLoadedHistory = true
-        pruneExpiredHistory()
-    }
-
-    private func ensureHistoryLoaded() {
-        guard !hasLoadedHistory else {
-            return
+        if let completion {
+            historyLoadCompletions.append(completion)
         }
-        loadHistory()
-    }
+        guard !isLoadingHistory else { return }
 
-    private func syncProcessedHistory() {
-        let items = history
+        isLoadingHistory = true
+        windowController?.reload()
+        let retentionDays = store.clipboard.retentionDays
+        let maxHistoryCount = store.clipboard.maxHistoryCount
         processingQueue.async { [weak self] in
-            self?.processedHistory = items
-        }
-    }
-
-    private func saveHistory() {
-        saveHistory(history)
-    }
-
-    private func saveHistory(_ items: [ClipboardHistoryItem]) {
-        let targetURL = AppPaths.clipboardHistoryURL
-        saveQueue.async {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
+            guard let self else { return }
+            let loaded: [ClipboardHistoryItem]
             do {
-                try AppPaths.ensureDirectories()
-                let data = try encoder.encode(items)
-                try data.write(to: targetURL, options: .atomic)
+                loaded = try self.historyStore.loadHistory(maxHistoryCount: maxHistoryCount, retentionDays: retentionDays)
             } catch {
-                AppLogger.shared.error("剪切板历史保存失败：\(error.localizedDescription)")
+                AppLogger.shared.error("剪切板历史加载失败：\(error.localizedDescription)")
+                loaded = []
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isLoadingHistory = false
+                self.hasLoadedHistory = true
+                self.history = loaded
+                let completions = self.historyLoadCompletions
+                self.historyLoadCompletions.removeAll()
+                completions.forEach { $0() }
             }
         }
     }
 
-    private func prunedHistory(_ items: [ClipboardHistoryItem], retentionDays: Int) -> [ClipboardHistoryItem] {
-        guard retentionDays > 0,
-              let cutoff = Calendar.current.date(byAdding: .day, value: -retentionDays, to: Date()) else {
-            return items
-        }
-        return items.filter { $0.isFavorite || $0.createdAt >= cutoff }
-    }
-
-    private func trimmedHistory(_ items: [ClipboardHistoryItem], maxHistoryCount: Int) -> [ClipboardHistoryItem] {
-        guard items.count > maxHistoryCount else { return items }
-        var result = items
-        while result.count > maxHistoryCount {
-            guard let removeIndex = result.indices.reversed().first(where: { !result[$0].isFavorite }) else {
-                break
+    private func updateHistoryFromStore(_ operation: @escaping (ClipboardHistoryStore) throws -> [ClipboardHistoryItem]) {
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            let updatedHistory: [ClipboardHistoryItem]
+            do {
+                updatedHistory = try operation(self.historyStore)
+            } catch {
+                AppLogger.shared.error("剪切板历史更新失败：\(error.localizedDescription)")
+                return
             }
-            result.remove(at: removeIndex)
+            DispatchQueue.main.async { [weak self] in
+                self?.history = updatedHistory
+            }
         }
-        return result
     }
 
-    private func saveHistorySynchronously() {
-        do {
-            try AppPaths.ensureDirectories()
-            let data = try encoder.encode(history)
-            try data.write(to: AppPaths.clipboardHistoryURL, options: .atomic)
-        } catch {
-            AppLogger.shared.error("剪切板历史保存失败：\(error.localizedDescription)")
+    private func reloadHistoryFromStore() {
+        let maxHistoryCount = store.clipboard.maxHistoryCount
+        let retentionDays = store.clipboard.retentionDays
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            let loaded: [ClipboardHistoryItem]
+            do {
+                loaded = try self.historyStore.loadHistory(maxHistoryCount: maxHistoryCount, retentionDays: retentionDays)
+            } catch {
+                AppLogger.shared.error("剪切板历史刷新失败：\(error.localizedDescription)")
+                return
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.history = loaded
+            }
         }
     }
 }

@@ -524,6 +524,10 @@ final class MacIconButton: NSControl {
         fatalError("未实现 init(coder:)")
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea {

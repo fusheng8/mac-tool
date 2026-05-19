@@ -1,0 +1,224 @@
+import AppKit
+import XCTest
+@testable import MacToolApp
+
+final class ClipboardHistoryStoreTests: XCTestCase {
+    private var temporaryDirectories: [URL] = []
+
+    override func tearDownWithError() throws {
+        for directory in temporaryDirectories {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        temporaryDirectories.removeAll()
+        try super.tearDownWithError()
+    }
+
+    func testInsertReadsStoredTypesAndSplitsInlineAndBlobStorage() throws {
+        let fixture = try makeStoreFixture()
+        let smallText = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("hello".utf8))
+        let largeHTML = ClipboardStoredType(type: NSPasteboard.PasteboardType.html.rawValue, data: Data(repeating: 65, count: 40_000))
+        let item = makeItem(
+            preview: "hello",
+            plainText: "hello",
+            storedTypes: [smallText, largeHTML],
+            metadata: makeMetadata(contentType: "富文本", pasteboardTypes: [smallText.type, largeHTML.type])
+        )
+
+        let loaded = try fixture.store.insert(item, maxHistoryCount: 20, retentionDays: 30)
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].storedTypes.count, 0)
+        XCTAssertEqual(try fixture.store.loadStoredTypes(itemID: item.id), [smallText, largeHTML])
+        XCTAssertTrue(try containsFile(in: fixture.blobDirectory))
+    }
+
+    func testDuplicateInsertKeepsFavoriteState() throws {
+        let fixture = try makeStoreFixture()
+        let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("same".utf8))
+        let first = makeItem(preview: "same", plainText: "same", storedTypes: [storedType], isFavorite: true)
+        let second = makeItem(preview: "same", plainText: "same", storedTypes: [storedType], isFavorite: false)
+
+        _ = try fixture.store.insert(first, maxHistoryCount: 20, retentionDays: 30)
+        let loaded = try fixture.store.insert(second, maxHistoryCount: 20, retentionDays: 30)
+
+        XCTAssertEqual(loaded.map(\.id), [second.id])
+        XCTAssertTrue(loaded[0].isFavorite)
+    }
+
+    func testFTSSearchFindsPreviewPlainTextFilePathAndSourceApp() throws {
+        let fixture = try makeStoreFixture()
+        let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("Quarterly budget notes".utf8))
+        let item = makeItem(
+            sourceApplicationName: "Google Chrome",
+            preview: "Quarterly budget",
+            plainText: "Quarterly budget notes",
+            storedTypes: [storedType],
+            metadata: makeMetadata(
+                contentType: "文件",
+                detailText: "文件 · budget.txt",
+                sourcePaths: ["/Users/fusheng/Documents/budget.txt"],
+                fileNames: ["budget.txt"],
+                pasteboardTypes: [storedType.type]
+            )
+        )
+        _ = try fixture.store.insert(item, maxHistoryCount: 20, retentionDays: 30)
+
+        XCTAssertEqual(try fixture.store.search("Quarterly", limit: 10).map(\.id), [item.id])
+        XCTAssertEqual(try fixture.store.search("budget", limit: 10).map(\.id), [item.id])
+        XCTAssertEqual(try fixture.store.search("Chrome", limit: 10).map(\.id), [item.id])
+        XCTAssertEqual(
+            try fixture.store.search(
+                "budget",
+                filter: ClipboardHistorySearchFilter(applicationKey: "app:com.example.test"),
+                limit: 10
+            ).map(\.id),
+            [item.id]
+        )
+        XCTAssertTrue(
+            try fixture.store.search(
+                "budget",
+                filter: ClipboardHistorySearchFilter(favoritesOnly: true),
+                limit: 10
+            ).isEmpty
+        )
+    }
+
+    func testDeleteAndClearRemoveBlobAndThumbnailFiles() throws {
+        let fixture = try makeStoreFixture()
+        let imageType = ClipboardStoredType(type: NSPasteboard.PasteboardType.png.rawValue, data: try makePNGData())
+        let largeType = ClipboardStoredType(type: "public.html", data: Data(repeating: 66, count: 40_000))
+        let item = makeItem(
+            preview: "图片",
+            plainText: "",
+            storedTypes: [imageType, largeType],
+            metadata: makeMetadata(contentType: "图片", pasteboardTypes: [imageType.type, largeType.type], imagePixelWidth: 2, imagePixelHeight: 2)
+        )
+
+        _ = try fixture.store.insert(item, maxHistoryCount: 20, retentionDays: 30)
+        XCTAssertNotNil(try fixture.store.ensureThumbnail(for: item.id))
+        XCTAssertTrue(try containsFile(in: fixture.blobDirectory))
+        XCTAssertTrue(try containsFile(in: fixture.thumbnailDirectory))
+
+        _ = try fixture.store.delete(item.id)
+        XCTAssertFalse(try containsFile(in: fixture.blobDirectory))
+        XCTAssertFalse(try containsFile(in: fixture.thumbnailDirectory))
+    }
+
+    func testLegacyJSONMigrationPreservesMetadataAndStoredTypes() throws {
+        let root = try makeTemporaryDirectory()
+        let legacyURL = root.appendingPathComponent("clipboard-history.json")
+        let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("legacy".utf8))
+        let item = makeItem(
+            preview: "legacy",
+            plainText: "legacy",
+            storedTypes: [storedType],
+            isFavorite: true,
+            metadata: makeMetadata(contentType: "文本", detailText: "文本 · 纯文本", pasteboardTypes: [storedType.type])
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([item]).write(to: legacyURL, options: .atomic)
+
+        let fixture = try makeStoreFixture(rootDirectory: root, legacyHistoryURL: legacyURL)
+        let loaded = try fixture.store.loadHistory(maxHistoryCount: 20, retentionDays: 30)
+
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].id, item.id)
+        XCTAssertTrue(loaded[0].isFavorite)
+        XCTAssertEqual(loaded[0].metadata.detailText, "文本 · 纯文本")
+        XCTAssertEqual(try fixture.store.loadStoredTypes(itemID: item.id), [storedType])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("clipboard-history.json.migrated").path))
+    }
+
+    private func makeStoreFixture(
+        rootDirectory: URL? = nil,
+        legacyHistoryURL: URL? = nil
+    ) throws -> (store: ClipboardHistoryStore, rootDirectory: URL, blobDirectory: URL, thumbnailDirectory: URL) {
+        let root = try rootDirectory ?? makeTemporaryDirectory()
+        let clipboardDirectory = root.appendingPathComponent("Clipboard", isDirectory: true)
+        let blobDirectory = clipboardDirectory.appendingPathComponent("blobs", isDirectory: true)
+        let thumbnailDirectory = clipboardDirectory.appendingPathComponent("thumbnails", isDirectory: true)
+        let store = ClipboardHistoryStore(
+            rootDirectory: clipboardDirectory,
+            databaseURL: clipboardDirectory.appendingPathComponent("clipboard.sqlite"),
+            blobDirectory: blobDirectory,
+            thumbnailDirectory: thumbnailDirectory,
+            legacyHistoryURL: legacyHistoryURL
+        )
+        return (store, root, blobDirectory, thumbnailDirectory)
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        return directory
+    }
+
+    private func makeItem(
+        sourceApplicationName: String = "Unit Test",
+        preview: String,
+        plainText: String,
+        storedTypes: [ClipboardStoredType],
+        isFavorite: Bool = false,
+        metadata: ClipboardContentMetadata? = nil
+    ) -> ClipboardHistoryItem {
+        ClipboardHistoryItem(
+            sourceApplicationName: sourceApplicationName,
+            sourceBundleIdentifier: "com.example.test",
+            plainText: plainText,
+            previewText: preview,
+            storedTypes: storedTypes,
+            isFavorite: isFavorite,
+            metadata: metadata ?? makeMetadata(pasteboardTypes: storedTypes.map(\.type))
+        )
+    }
+
+    private func makeMetadata(
+        contentType: String = "文本",
+        detailText: String = "文本 · 纯文本",
+        sourcePaths: [String] = [],
+        fileNames: [String] = [],
+        pasteboardTypes: [String] = [],
+        imagePixelWidth: Int? = nil,
+        imagePixelHeight: Int? = nil
+    ) -> ClipboardContentMetadata {
+        ClipboardContentMetadata(
+            contentType: contentType,
+            detailText: detailText,
+            sourcePaths: sourcePaths,
+            fileNames: fileNames,
+            pasteboardTypes: pasteboardTypes,
+            imagePixelWidth: imagePixelWidth,
+            imagePixelHeight: imagePixelHeight,
+            thumbnailFileName: nil,
+            contentByteCount: nil
+        )
+    }
+
+    private func containsFile(in directory: URL) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return false }
+        let contents = try FileManager.default.subpathsOfDirectory(atPath: directory.path)
+        return contents.contains { !$0.hasSuffix("/") }
+    }
+
+    private func makePNGData() throws -> Data {
+        let representation = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        guard let representation,
+              let data = representation.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "ClipboardHistoryStoreTests", code: 1)
+        }
+        return data
+    }
+}

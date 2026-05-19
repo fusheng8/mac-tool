@@ -67,4 +67,37 @@ enum SystemCapabilities {
         }
         return (nil, output)
     }
+
+    static func registerBundledFinderExtensionIfAvailable() {
+        let extensionURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("PlugIns", isDirectory: true)
+            .appendingPathComponent("mac-tool-finder-sync.appex", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: extensionURL.path) else {
+            return
+        }
+
+        let addResult = runPluginKit(arguments: ["-a", extensionURL.path])
+        let enableResult = runPluginKit(arguments: ["-e", "use", "-i", finderExtensionBundleIdentifier])
+        if addResult && enableResult {
+            AppLogger.shared.info("Finder Sync 扩展已重新注册。")
+        } else {
+            AppLogger.shared.error("Finder Sync 扩展重新注册失败。")
+        }
+    }
+
+    private static func runPluginKit(arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
+        process.arguments = arguments
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            AppLogger.shared.error("无法运行 pluginkit：\(error.localizedDescription)")
+            return false
+        }
+    }
 }
