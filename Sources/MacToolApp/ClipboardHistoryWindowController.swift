@@ -64,7 +64,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.isMovableByWindowBackground = true
-        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.level = .floating
         panel.hidesOnDeactivate = true
         panel.minSize = Layout.minSize
