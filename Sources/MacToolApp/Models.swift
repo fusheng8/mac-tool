@@ -471,6 +471,7 @@ struct ClipboardConfig: Codable, Hashable {
     var excludedBundleIdentifiers: [String]
     var retentionDays: Int
     var pollIntervalMilliseconds: Int
+    var structuredPreviewLimitKB: Int
 
     static let defaultValue = ClipboardConfig(
         enabled: true,
@@ -482,7 +483,8 @@ struct ClipboardConfig: Codable, Hashable {
         excludeKnownPasswordManagers: true,
         excludedBundleIdentifiers: [],
         retentionDays: 0,
-        pollIntervalMilliseconds: 650
+        pollIntervalMilliseconds: 650,
+        structuredPreviewLimitKB: 256
     )
 
     enum CodingKeys: String, CodingKey {
@@ -496,6 +498,7 @@ struct ClipboardConfig: Codable, Hashable {
         case excludedBundleIdentifiers
         case retentionDays
         case pollIntervalMilliseconds
+        case structuredPreviewLimitKB
     }
 
     init(
@@ -508,7 +511,8 @@ struct ClipboardConfig: Codable, Hashable {
         excludeKnownPasswordManagers: Bool,
         excludedBundleIdentifiers: [String],
         retentionDays: Int,
-        pollIntervalMilliseconds: Int = 650
+        pollIntervalMilliseconds: Int = 650,
+        structuredPreviewLimitKB: Int = 256
     ) {
         self.enabled = enabled
         self.hotKeyEnabled = hotKeyEnabled
@@ -520,6 +524,7 @@ struct ClipboardConfig: Codable, Hashable {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.retentionDays = max(0, retentionDays)
         self.pollIntervalMilliseconds = Self.normalizedPollIntervalMilliseconds(pollIntervalMilliseconds)
+        self.structuredPreviewLimitKB = Self.normalizedStructuredPreviewLimitKB(structuredPreviewLimitKB)
     }
 
     init(from decoder: Decoder) throws {
@@ -536,10 +541,21 @@ struct ClipboardConfig: Codable, Hashable {
         pollIntervalMilliseconds = Self.normalizedPollIntervalMilliseconds(
             try container.decodeIfPresent(Int.self, forKey: .pollIntervalMilliseconds) ?? 650
         )
+        structuredPreviewLimitKB = Self.normalizedStructuredPreviewLimitKB(
+            try container.decodeIfPresent(Int.self, forKey: .structuredPreviewLimitKB) ?? 256
+        )
     }
 
     static func normalizedPollIntervalMilliseconds(_ value: Int) -> Int {
         min(10_000, max(200, value))
+    }
+
+    static func normalizedStructuredPreviewLimitKB(_ value: Int) -> Int {
+        min(4096, max(16, value))
+    }
+
+    var structuredPreviewLimitBytes: Int {
+        structuredPreviewLimitKB * 1024
     }
 }
 
