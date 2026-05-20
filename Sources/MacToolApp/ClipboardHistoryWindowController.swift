@@ -55,7 +55,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         self.controller = controller
         let panel = ClipboardPanel(
             contentRect: NSRect(origin: .zero, size: Layout.defaultSize),
-            styleMask: [.titled, .fullSizeContentView],
+            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -64,7 +64,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.isMovableByWindowBackground = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
         panel.level = .floating
         panel.hidesOnDeactivate = true
         panel.minSize = Layout.minSize
@@ -92,8 +92,8 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         ignoreOutsideClicksUntil = Date.timeIntervalSinceReferenceDate + 0.35
         resetPanelSize()
         positionAtTopRight()
-        NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
+        window?.makeKey()
         window?.makeFirstResponder(nil)
         installOutsideClickMonitors()
         clearSelection()
