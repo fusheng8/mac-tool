@@ -1,4 +1,6 @@
 import AppKit
+import ApplicationServices
+import Carbon.HIToolbox
 import Foundation
 import QuickLookUI
 
@@ -6,16 +8,23 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private enum Layout {
         static let defaultSize = NSSize(width: 320, height: 500)
         static let minSize = NSSize(width: 300, height: 420)
+        static let previewSize = NSSize(width: 760, height: 620)
         static let screenMargin: CGFloat = 36
         static let rowHeight: CGFloat = 66
         static let rowSpacing: CGFloat = 2
         static let rowOverscan = 4
         static let deferredListRebuildDelay: TimeInterval = 0.018
+        static let panelLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)))
     }
 
     private enum Filter {
         static let allApplications = "__all__"
         static let favorites = "__favorites__"
+    }
+
+    private enum PanelHotKeyAction {
+        case shortcut(ClipboardShortcut)
+        case pasteVisibleItem(Int)
     }
 
     private let controller: ClipboardHistoryController
@@ -31,6 +40,11 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private let footerActionLabel = NSTextField(labelWithString: "")
     private var localOutsideClickMonitor: Any?
     private var globalOutsideClickMonitor: Any?
+    private var keyboardEventTap: CFMachPort?
+    private var keyboardEventTapRunLoopSource: CFRunLoopSource?
+    private var panelHotKeyRefs: [EventHotKeyRef] = []
+    private var panelHotKeyHandlerRef: EventHandlerRef?
+    private var panelHotKeyActions: [UInt32: PanelHotKeyAction] = [:]
     private var selectedApplication = Filter.allApplications
     private var selectedItemID: UUID?
     private var displayedItems: [ClipboardHistoryItem] = []
@@ -48,14 +62,17 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private var isPinned = false
     private var quickLookItem: ClipboardQuickLookItem?
     private var quickLookCleanupURL: URL?
+    private var previewPanel: NSPanel?
+    private var previewedItemID: UUID?
     private var quickLookKeyMonitor: Any?
     private var ignoreOutsideClicksUntil: TimeInterval = 0
+    private let panelHotKeySignature = OSType(0x434C5050)
 
     init(controller: ClipboardHistoryController) {
         self.controller = controller
         let panel = ClipboardPanel(
             contentRect: NSRect(origin: .zero, size: Layout.defaultSize),
-            styleMask: [.titled, .fullSizeContentView],
+            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -64,9 +81,10 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.isMovableByWindowBackground = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.level = .floating
-        panel.hidesOnDeactivate = true
+        panel.isFloatingPanel = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.level = Layout.panelLevel
+        panel.hidesOnDeactivate = false
         panel.minSize = Layout.minSize
         panel.maxSize = Layout.defaultSize
         super.init(window: panel)
@@ -76,12 +94,18 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         panel.onOrderOut = { [weak self] in
             self?.closeQuickLookPreview()
             self?.removeOutsideClickMonitors()
+            self?.removeKeyboardEventTap()
+            self?.unregisterPanelHotKeys()
+            self?.removePanelHotKeyHandler()
         }
         buildUI()
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        unregisterPanelHotKeys()
+        removeKeyboardEventTap()
+        removePanelHotKeyHandler()
     }
 
     required init?(coder: NSCoder) {
@@ -92,10 +116,14 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         ignoreOutsideClicksUntil = Date.timeIntervalSinceReferenceDate + 0.35
         resetPanelSize()
         positionAtTopRight()
-        NSApp.activate(ignoringOtherApps: true)
+        window?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        window?.level = Layout.panelLevel
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
         window?.makeFirstResponder(nil)
         installOutsideClickMonitors()
+        registerPanelHotKeys()
+        installKeyboardEventTap()
         clearSelection()
         window?.layoutIfNeeded()
         DispatchQueue.main.async { [weak self] in
@@ -408,6 +436,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         let items = filteredItems()
         displayedItems = items
         validateSelection(in: items)
+        selectDefaultItemIfNeeded(in: items)
         pruneReusableRows()
         updateFooter()
         if items.isEmpty {
@@ -784,8 +813,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     @objc private func togglePinned() {
         isPinned.toggle()
-        (window as? NSPanel)?.hidesOnDeactivate = !isPinned
-        window?.level = isPinned ? .statusBar : .floating
+        window?.level = Layout.panelLevel
         pinButton.symbolName = isPinned ? "pin.fill" : "pin"
         pinButton.tintColor = isPinned ? MacAssistantUI.Color.blue : .secondaryLabelColor
     }
@@ -876,6 +904,187 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         }
     }
 
+    private func registerPanelHotKeys() {
+        unregisterPanelHotKeys()
+        installPanelHotKeyHandlerIfNeeded()
+
+        var nextID: UInt32 = 1
+        for shortcut in ClipboardShortcut.allCases where shortcut != .pasteVisibleItem {
+            let binding = controller.configuration.shortcuts.binding(for: shortcut)
+            guard binding.enabled else { continue }
+            registerPanelHotKey(
+                id: nextID,
+                keyCode: binding.hotKey.keyCode,
+                modifiers: binding.hotKey.carbonModifiers,
+                action: .shortcut(shortcut)
+            )
+            nextID += 1
+        }
+
+        let visibleBinding = controller.configuration.shortcuts.binding(for: .pasteVisibleItem)
+        if visibleBinding.enabled {
+            for (index, keyCode) in [18, 19, 20, 21, 23, 22, 26, 28, 25].enumerated() {
+                registerPanelHotKey(
+                    id: nextID,
+                    keyCode: UInt32(keyCode),
+                    modifiers: visibleBinding.hotKey.carbonModifiers,
+                    action: .pasteVisibleItem(index)
+                )
+                nextID += 1
+            }
+        }
+    }
+
+    private func installPanelHotKeyHandlerIfNeeded() {
+        guard panelHotKeyHandlerRef == nil else { return }
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let selfPointer = Unmanaged.passUnretained(self).toOpaque()
+        let status = InstallEventHandler(
+            GetApplicationEventTarget(),
+            { _, eventRef, userData -> OSStatus in
+                guard let eventRef, let userData else { return noErr }
+                var hotKeyID = EventHotKeyID()
+                GetEventParameter(
+                    eventRef,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyID
+                )
+                let controller = Unmanaged<ClipboardHistoryWindowController>
+                    .fromOpaque(userData)
+                    .takeUnretainedValue()
+                return controller.handlePanelHotKey(hotKeyID) ? noErr : OSStatus(eventNotHandledErr)
+            },
+            1,
+            &eventType,
+            selfPointer,
+            &panelHotKeyHandlerRef
+        )
+        if status != noErr {
+            AppLogger.shared.error("剪切板面板快捷键监听失败：\(status)")
+        }
+    }
+
+    private func removePanelHotKeyHandler() {
+        if let panelHotKeyHandlerRef {
+            RemoveEventHandler(panelHotKeyHandlerRef)
+            self.panelHotKeyHandlerRef = nil
+        }
+    }
+
+    private func registerPanelHotKey(id: UInt32, keyCode: UInt32, modifiers: UInt32, action: PanelHotKeyAction) {
+        var hotKeyRef: EventHotKeyRef?
+        let hotKeyID = EventHotKeyID(signature: panelHotKeySignature, id: id)
+        let status = RegisterEventHotKey(
+            keyCode,
+            modifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
+        if status == noErr, let hotKeyRef {
+            panelHotKeyRefs.append(hotKeyRef)
+            panelHotKeyActions[id] = action
+        } else {
+            AppLogger.shared.error("剪切板面板快捷键注册失败：keyCode=\(keyCode), modifiers=\(modifiers), status=\(status)")
+        }
+    }
+
+    private func unregisterPanelHotKeys() {
+        for hotKeyRef in panelHotKeyRefs {
+            UnregisterEventHotKey(hotKeyRef)
+        }
+        panelHotKeyRefs.removeAll()
+        panelHotKeyActions.removeAll()
+    }
+
+    private func handlePanelHotKey(_ hotKeyID: EventHotKeyID) -> Bool {
+        guard hotKeyID.signature == panelHotKeySignature,
+              window?.isVisible == true,
+              let action = panelHotKeyActions[hotKeyID.id] else {
+            return false
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window?.isVisible == true else { return }
+            switch action {
+            case .shortcut(let shortcut):
+                _ = self.handleShortcutAction(shortcut)
+            case .pasteVisibleItem(let index):
+                _ = self.pasteShortcut(at: index)
+            }
+        }
+        return true
+    }
+
+    private func installKeyboardEventTap() {
+        removeKeyboardEventTap()
+        guard AXIsProcessTrusted() else { return }
+
+        let selfPointer = Unmanaged.passUnretained(self).toOpaque()
+        guard let eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(1 << CGEventType.keyDown.rawValue),
+            callback: { _, type, event, userInfo in
+                guard let userInfo else {
+                    return Unmanaged.passUnretained(event)
+                }
+                let controller = Unmanaged<ClipboardHistoryWindowController>
+                    .fromOpaque(userInfo)
+                    .takeUnretainedValue()
+                return controller.handleKeyboardTap(type: type, event: event)
+            },
+            userInfo: selfPointer
+        ) else {
+            AppLogger.shared.error("剪切板快捷键事件拦截失败，请确认辅助功能权限已授权。")
+            return
+        }
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
+        keyboardEventTap = eventTap
+        keyboardEventTapRunLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+    }
+
+    private func removeKeyboardEventTap() {
+        if let source = keyboardEventTapRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            keyboardEventTapRunLoopSource = nil
+        }
+        if let eventTap = keyboardEventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+            CFMachPortInvalidate(eventTap)
+            keyboardEventTap = nil
+        }
+    }
+
+    private func handleKeyboardTap(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let keyboardEventTap {
+                CGEvent.tapEnable(tap: keyboardEventTap, enable: true)
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard type == .keyDown,
+              window?.isVisible == true,
+              let nsEvent = NSEvent(cgEvent: event) else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        return handleKeyDown(nsEvent) ? nil : Unmanaged.passUnretained(event)
+    }
+
     private func closeIfClickedOutside(localEvent event: NSEvent) {
         guard !isPinned, window?.isVisible == true else { return }
         guard Date.timeIntervalSinceReferenceDate >= ignoreOutsideClicksUntil else { return }
@@ -946,7 +1155,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         }
 
         if shortcut(.quickLook, matches: event) {
-            return toggleQuickLookPreview()
+            return handleShortcutAction(.quickLook)
         }
 
         if let index = visibleShortcutIndex(for: event) {
@@ -954,30 +1163,53 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         }
 
         if shortcut(.showActionsMenu, matches: event) {
-            return showSelectedItemContextMenu()
+            return handleShortcutAction(.showActionsMenu)
         }
         if shortcut(.pastePlainText, matches: event) {
-            return pasteSelected(mode: .plainText)
+            return handleShortcutAction(.pastePlainText)
         }
         if shortcut(.pasteSelected, matches: event) {
-            return pasteSelected(mode: .formatted)
+            return handleShortcutAction(.pasteSelected)
         }
         if shortcut(.selectPreviousApplication, matches: event) {
-            return selectRelativeApplicationFilter(-1)
+            return handleShortcutAction(.selectPreviousApplication)
         }
         if shortcut(.selectNextApplication, matches: event) {
-            return selectRelativeApplicationFilter(1)
+            return handleShortcutAction(.selectNextApplication)
         }
         if shortcut(.selectNextItem, matches: event) {
-            focusClipboardListIfNeeded()
-            return selectRelative(1)
+            return handleShortcutAction(.selectNextItem)
         }
         if shortcut(.selectPreviousItem, matches: event) {
-            focusClipboardListIfNeeded()
-            return selectRelative(-1)
+            return handleShortcutAction(.selectPreviousItem)
         }
 
         return focusSearchAndHandleTextInput(event, flags: flags)
+    }
+
+    private func handleShortcutAction(_ shortcut: ClipboardShortcut) -> Bool {
+        switch shortcut {
+        case .quickLook:
+            return toggleQuickLookPreview()
+        case .showActionsMenu:
+            return showSelectedItemContextMenu()
+        case .pastePlainText:
+            return pasteSelected(mode: .plainText)
+        case .pasteSelected:
+            return pasteSelected(mode: .formatted)
+        case .selectPreviousApplication:
+            return selectRelativeApplicationFilter(-1)
+        case .selectNextApplication:
+            return selectRelativeApplicationFilter(1)
+        case .selectNextItem:
+            focusClipboardListIfNeeded()
+            return selectRelative(1)
+        case .selectPreviousItem:
+            focusClipboardListIfNeeded()
+            return selectRelative(-1)
+        case .pasteVisibleItem:
+            return false
+        }
     }
 
     private func focusSearchAndHandleTextInput(_ event: NSEvent, flags: NSEvent.ModifierFlags) -> Bool {
@@ -1046,6 +1278,11 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             selectedItemID = nil
             return
         }
+    }
+
+    private func selectDefaultItemIfNeeded(in items: [ClipboardHistoryItem]) {
+        guard selectedItemID == nil, let firstItem = items.first else { return }
+        selectedItemID = firstItem.id
     }
 
     private func pasteSelected(mode: ClipboardPasteMode) -> Bool {
@@ -1197,8 +1434,8 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     private func toggleQuickLookPreview() -> Bool {
-        if let panel = QLPreviewPanel.shared(), panel.isVisible {
-            guard quickLookItem?.id == selectedItemID else {
+        if previewPanel?.isVisible == true {
+            guard previewedItemID == selectedItemID else {
                 return showQuickLookPreview()
             }
             closeQuickLookPreview()
@@ -1209,8 +1446,12 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     private func showQuickLookPreview() -> Bool {
-        guard let item = selectedItem(),
-              let previewURL = makeQuickLookURL(for: item) else {
+        guard let item = selectedItem() else {
+            AppLogger.shared.error("剪切板快速预览失败：没有选中记录")
+            return false
+        }
+        guard let previewURL = makeQuickLookURL(for: item) else {
+            AppLogger.shared.error("剪切板快速预览失败：无法生成预览文件，item=\(item.id)")
             return false
         }
 
@@ -1219,14 +1460,13 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             url: previewURL,
             title: quickLookTitle(for: item)
         )
+        previewedItemID = item.id
 
-        guard let panel = QLPreviewPanel.shared() else { return false }
-        panel.dataSource = self
-        panel.delegate = self
-        panel.reloadData()
-        panel.refreshCurrentPreviewItem()
-        panel.makeKeyAndOrderFront(nil)
-        installQuickLookKeyMonitor()
+        let panel = previewPanel ?? makePreviewPanel()
+        previewPanel = panel
+        panel.contentView = makePreviewContentView(for: item, url: previewURL)
+        panel.setFrame(previewFrame(for: panel), display: true)
+        panel.orderFrontRegardless()
         return true
     }
 
@@ -1234,16 +1474,563 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         if let panel = QLPreviewPanel.shared(), panel.isVisible {
             panel.orderOut(nil)
         }
+        previewPanel?.orderOut(nil)
         clearQuickLookPreviewState()
     }
 
     private func clearQuickLookPreviewState() {
         quickLookItem = nil
+        previewedItemID = nil
         if let quickLookKeyMonitor {
             NSEvent.removeMonitor(quickLookKeyMonitor)
             self.quickLookKeyMonitor = nil
         }
         cleanupQuickLookFile()
+    }
+
+    private func makePreviewPanel() -> NSPanel {
+        let panel = ClipboardPanel(
+            contentRect: NSRect(origin: .zero, size: Layout.previewSize),
+            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.isFloatingPanel = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.level = Layout.panelLevel
+        panel.hidesOnDeactivate = false
+        panel.onKeyDown = { [weak self] event in
+            self?.handleKeyDown(event) ?? false
+        }
+        panel.onOrderOut = { [weak self, weak panel] in
+            guard let panel, self?.previewPanel === panel else { return }
+            self?.clearQuickLookPreviewState()
+        }
+        return panel
+    }
+
+    private func previewFrame(for panel: NSPanel) -> NSRect {
+        let sourceFrame = window?.frame ?? NSRect(origin: NSEvent.mouseLocation, size: Layout.defaultSize)
+        let screen = window?.screen
+            ?? NSScreen.screens.first { NSMouseInRect(sourceFrame.origin, $0.frame, false) }
+            ?? NSScreen.main
+        let visibleFrame = screen?.visibleFrame ?? sourceFrame
+        let size = NSSize(
+            width: min(Layout.previewSize.width, visibleFrame.width - Layout.screenMargin * 2),
+            height: min(Layout.previewSize.height, visibleFrame.height - Layout.screenMargin * 2)
+        )
+        let originX = visibleFrame.midX - size.width / 2
+        let originY = visibleFrame.midY - size.height / 2
+        return NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+    }
+
+    private func makePreviewContentView(for item: ClipboardHistoryItem, url: URL) -> NSView {
+        let root = LayerBackedView(backgroundColor: MacAssistantUI.Color.window, cornerRadius: 14)
+        let descriptor = ClipboardPreviewSupport.descriptor(
+            for: item,
+            previewURL: url,
+            structuredTextLimitBytes: controller.configuration.structuredPreviewLimitBytes
+        )
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.distribution = .fill
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+
+        let header = makePreviewHeader(descriptor: descriptor)
+        let body = makePreviewBody(descriptor: descriptor, url: url, item: item)
+        header.setContentHuggingPriority(.required, for: .vertical)
+        header.setContentCompressionResistancePriority(.required, for: .vertical)
+        body.setContentHuggingPriority(.defaultLow, for: .vertical)
+        body.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        stack.addArrangedSubview(header)
+        stack.addArrangedSubview(body)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: root.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+        ])
+
+        return root
+    }
+
+    private func makePreviewHeader(descriptor: ClipboardPreviewDescriptor) -> NSView {
+        let header = LayerBackedView(backgroundColor: NSColor.white.withAlphaComponent(0.68))
+        header.heightAnchor.constraint(equalToConstant: 52).isActive = true
+
+        let iconBackground = LayerBackedView(
+            backgroundColor: descriptor.tintColor.withAlphaComponent(0.12),
+            cornerRadius: 8
+        )
+        header.addSubview(iconBackground)
+
+        let iconView = NSImageView(image: MacAssistantUI.symbol(descriptor.symbolName, pointSize: 15, weight: .semibold) ?? NSImage())
+        iconView.contentTintColor = descriptor.tintColor
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconBackground.addSubview(iconView)
+
+        let titleLabel = NSTextField(labelWithString: descriptor.title)
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        header.addSubview(titleLabel)
+
+        let metadataStack = NSStackView()
+        metadataStack.orientation = .horizontal
+        metadataStack.alignment = .centerY
+        metadataStack.distribution = .fill
+        metadataStack.spacing = 7
+        metadataStack.translatesAutoresizingMaskIntoConstraints = false
+        metadataStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        header.addSubview(metadataStack)
+
+        for detail in descriptor.details.prefix(4) {
+            metadataStack.addArrangedSubview(makePreviewHeaderChip(detail))
+        }
+
+        let divider = MacAssistantUI.separator()
+        header.addSubview(divider)
+
+        NSLayoutConstraint.activate([
+            iconBackground.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+            iconBackground.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            iconBackground.widthAnchor.constraint(equalToConstant: 30),
+            iconBackground.heightAnchor.constraint(equalToConstant: 30),
+
+            iconView.centerXAnchor.constraint(equalTo: iconBackground.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: iconBackground.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 17),
+            iconView.heightAnchor.constraint(equalToConstant: 17),
+
+            titleLabel.leadingAnchor.constraint(equalTo: iconBackground.trailingAnchor, constant: 10),
+            titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            titleLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 126),
+
+            metadataStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 16),
+            metadataStack.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor, constant: -16),
+            metadataStack.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
+            divider.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            divider.bottomAnchor.constraint(equalTo: header.bottomAnchor)
+        ])
+
+        return header
+    }
+
+    private func makePreviewHeaderChip(_ text: String) -> NSView {
+        let chip = LayerBackedView(
+            backgroundColor: NSColor.white.withAlphaComponent(0.52),
+            cornerRadius: 7,
+            borderColor: MacAssistantUI.Color.hairline,
+            borderWidth: 1
+        )
+        chip.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 11.5, weight: .medium)
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        chip.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 9),
+            label.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -9),
+            label.topAnchor.constraint(equalTo: chip.topAnchor, constant: 4),
+            label.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -4),
+            chip.widthAnchor.constraint(lessThanOrEqualToConstant: 160)
+        ])
+        return chip
+    }
+
+    private func makePreviewBody(descriptor: ClipboardPreviewDescriptor, url: URL, item: ClipboardHistoryItem) -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let previewView: NSView
+        switch descriptor.kind {
+        case .image:
+            previewView = ClipboardPreviewImageView(image: NSImage(contentsOf: url), title: nil)
+        case .richText:
+            if let richText = richTextPreviewAttributedString(for: item) {
+                previewView = makeAttributedPreviewView(
+                    attributedString: readablePreviewAttributedString(
+                        richText,
+                        defaultFont: textPreviewFont(codeLike: false),
+                        lineSpacing: 4,
+                        paragraphSpacing: 8
+                    )
+                )
+            } else {
+                previewView = ClipboardPreviewTextView(text: descriptor.displayText ?? "", mode: .plain, title: nil)
+            }
+        case .json:
+            previewView = ClipboardPreviewTextView(
+                text: descriptor.formattedJSON ?? descriptor.displayText ?? "",
+                mode: .code,
+                showsLineNumbers: true,
+                title: nil
+            )
+        case .markdown:
+            previewView = makeAttributedPreviewView(attributedString: markdownPreviewAttributedString(descriptor.displayText ?? ""))
+        case .url:
+            if let url = descriptor.url {
+                previewView = ClipboardPreviewURLCardView(url: url, title: nil)
+            } else {
+                previewView = ClipboardPreviewTextView(text: descriptor.displayText ?? "", mode: .plain, title: nil)
+            }
+        case .code:
+            previewView = ClipboardPreviewTextView(
+                text: descriptor.displayText ?? "",
+                mode: .code,
+                showsLineNumbers: true,
+                title: nil
+            )
+        case .table:
+            previewView = ClipboardPreviewTableView(rows: descriptor.tableRows, title: nil)
+        case .file:
+            previewView = ClipboardPreviewFileListView(items: previewFileItems(for: item, fallbackURL: url), title: nil)
+        case .text:
+            previewView = ClipboardPreviewTextView(text: descriptor.displayText ?? "", mode: .plain, title: nil)
+        }
+
+        container.addSubview(previewView)
+        NSLayoutConstraint.activate([
+            previewView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            previewView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            previewView.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
+            previewView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14)
+        ])
+        return container
+    }
+
+    private func previewFileItems(for item: ClipboardHistoryItem, fallbackURL: URL) -> [ClipboardPreviewFileListView.Item] {
+        var paths = item.metadata.sourcePaths
+        if paths.isEmpty, fallbackURL.isFileURL {
+            paths = [fallbackURL.path]
+        }
+        if paths.isEmpty {
+            let textPaths = normalizedPreviewText(item.plainText)
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.hasPrefix("/") || $0.hasPrefix("file://") }
+            paths = textPaths
+        }
+        return paths.map { path in
+            if path.hasPrefix("file://"), let url = URL(string: path) {
+                return ClipboardPreviewFileListView.Item(url: url)
+            }
+            return ClipboardPreviewFileListView.Item(path: path)
+        }
+    }
+
+    private func makeAttributedPreviewView(attributedString: NSAttributedString) -> NSView {
+        let card = ClipboardPreviewCard()
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 16, height: 14)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        textView.textStorage?.setAttributedString(attributedString)
+        scrollView.documentView = textView
+
+        let well = LayerBackedView(
+            backgroundColor: NSColor.textBackgroundColor,
+            cornerRadius: 8,
+            borderColor: MacAssistantUI.Color.hairline,
+            borderWidth: 1
+        )
+        well.addSubview(scrollView)
+        card.setContent(well)
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: well.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: well.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: well.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: well.bottomAnchor),
+            well.heightAnchor.constraint(greaterThanOrEqualToConstant: 180)
+        ])
+        return card
+    }
+
+    private func makeTextPreviewView(text: String, item: ClipboardHistoryItem) -> NSView {
+        let card = LayerBackedView(
+            backgroundColor: NSColor.textBackgroundColor,
+            cornerRadius: 10,
+            borderColor: MacAssistantUI.Color.hairline,
+            borderWidth: 1
+        )
+
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.borderType = .noBorder
+        scrollView.autohidesScrollers = true
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 18, height: 16)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.textStorage?.setAttributedString(textPreviewAttributedString(text: text, item: item))
+        scrollView.documentView = textView
+
+        card.addSubview(scrollView)
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: card.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: card.bottomAnchor)
+        ])
+        return card
+    }
+
+    private func textPreviewAttributedString(text: String, item: ClipboardHistoryItem) -> NSAttributedString {
+        let normalized = normalizedPreviewText(text)
+        let codeLike = isCodeLikePreviewText(normalized, item: item)
+        if !codeLike, let richText = richTextPreviewAttributedString(for: item) {
+            return readablePreviewAttributedString(
+                richText,
+                defaultFont: textPreviewFont(codeLike: false),
+                lineSpacing: 4,
+                paragraphSpacing: 8
+            )
+        }
+
+        return readablePreviewAttributedString(
+            NSAttributedString(string: normalized),
+            defaultFont: textPreviewFont(codeLike: codeLike),
+            lineSpacing: codeLike ? 2 : 4,
+            paragraphSpacing: codeLike ? 4 : 8
+        )
+    }
+
+    private func readablePreviewAttributedString(
+        _ attributedString: NSAttributedString,
+        defaultFont: NSFont,
+        lineSpacing: CGFloat,
+        paragraphSpacing: CGFloat
+    ) -> NSAttributedString {
+        let mutable = NSMutableAttributedString(attributedString: attributedString)
+        let fullRange = NSRange(location: 0, length: mutable.length)
+        guard fullRange.length > 0 else { return mutable }
+
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byWordWrapping
+        paragraphStyle.lineSpacing = lineSpacing
+        paragraphStyle.paragraphSpacing = paragraphSpacing
+        mutable.addAttribute(.foregroundColor, value: NSColor.labelColor, range: fullRange)
+        mutable.addAttribute(.paragraphStyle, value: paragraphStyle, range: fullRange)
+        mutable.enumerateAttribute(.font, in: fullRange) { value, range, _ in
+            guard value == nil else { return }
+            mutable.addAttribute(.font, value: defaultFont, range: range)
+        }
+        return mutable
+    }
+
+    private func markdownPreviewAttributedString(_ text: String) -> NSAttributedString {
+        let normalized = normalizedPreviewText(text)
+        let result = NSMutableAttributedString()
+        let baseFont = NSFont.systemFont(ofSize: 14, weight: .regular)
+        let codeFont = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        paragraph.paragraphSpacing = 8
+        paragraph.lineBreakMode = .byWordWrapping
+
+        var isCodeBlock = false
+        for rawLine in normalized.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("```") {
+                isCodeBlock.toggle()
+                continue
+            }
+
+            let attributes: [NSAttributedString.Key: Any]
+            let displayLine: String
+            if isCodeBlock {
+                displayLine = rawLine
+                attributes = [
+                    .font: codeFont,
+                    .foregroundColor: NSColor.labelColor,
+                    .backgroundColor: NSColor.labelColor.withAlphaComponent(0.04),
+                    .paragraphStyle: paragraph
+                ]
+            } else if line.hasPrefix("# ") {
+                displayLine = String(line.dropFirst(2))
+                attributes = [
+                    .font: NSFont.systemFont(ofSize: 20, weight: .bold),
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: paragraph
+                ]
+            } else if line.hasPrefix("## ") {
+                displayLine = String(line.dropFirst(3))
+                attributes = [
+                    .font: NSFont.systemFont(ofSize: 17, weight: .semibold),
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: paragraph
+                ]
+            } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                displayLine = "• " + line.dropFirst(2)
+                attributes = [
+                    .font: baseFont,
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: paragraph
+                ]
+            } else if line.hasPrefix("> ") {
+                displayLine = String(line.dropFirst(2))
+                attributes = [
+                    .font: NSFont.systemFont(ofSize: 14, weight: .regular),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .paragraphStyle: paragraph
+                ]
+            } else {
+                displayLine = rawLine
+                attributes = [
+                    .font: baseFont,
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: paragraph
+                ]
+            }
+
+            result.append(NSAttributedString(string: displayLine + "\n", attributes: attributes))
+        }
+
+        return result.length == 0
+            ? NSAttributedString(string: normalized, attributes: [.font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph])
+            : result
+    }
+
+    private func richTextPreviewAttributedString(for item: ClipboardHistoryItem) -> NSAttributedString? {
+        for storedType in controller.storedTypes(for: item) {
+            let type = storedType.type.lowercased()
+            if type.contains("html"),
+               let attributed = previewAttributedString(
+                from: storedType.data,
+                documentType: .html
+               ) {
+                return attributed
+            }
+            if type.contains("rtf"),
+               let attributed = previewAttributedString(
+                from: storedType.data,
+                documentType: .rtf
+               ) {
+                return attributed
+            }
+        }
+        return nil
+    }
+
+    private func previewAttributedString(
+        from data: Data,
+        documentType: NSAttributedString.DocumentType
+    ) -> NSAttributedString? {
+        let encodings: [String.Encoding?] = documentType == .html ? [.utf8, .utf16, nil] : [nil]
+        for encoding in encodings {
+            var options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+                .documentType: documentType
+            ]
+            if let encoding {
+                options[.characterEncoding] = encoding.rawValue
+            }
+            if let attributed = try? NSAttributedString(
+                data: data,
+                options: options,
+                documentAttributes: nil
+            ), !normalizedPreviewText(attributed.string).isEmpty {
+                return attributed
+            }
+        }
+        return nil
+    }
+
+    private func textPreviewFont(codeLike: Bool) -> NSFont {
+        if codeLike {
+            return .monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        }
+        return .systemFont(ofSize: 14, weight: .regular)
+    }
+
+    private func normalizedPreviewText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func isCodeLikePreviewText(_ text: String, item: ClipboardHistoryItem) -> Bool {
+        let lowerTypes = item.metadata.pasteboardTypes.map { $0.lowercased() }
+        if lowerTypes.contains(where: { $0.contains("html") || $0.contains("rtf") }) {
+            return false
+        }
+
+        let sample = String(text.prefix(1200))
+        let codeSignals = [
+            "import ",
+            "func ",
+            "class ",
+            "struct ",
+            "let ",
+            "var ",
+            "=>",
+            "</",
+            "{",
+            "}",
+            ";"
+        ]
+        return codeSignals.filter { sample.contains($0) }.count >= 2
+    }
+
+    private func previewText(from url: URL, item: ClipboardHistoryItem) -> String? {
+        if let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty {
+            let normalized = normalizedPreviewText(text)
+            return normalized.isEmpty ? nil : normalized
+        }
+        let fallback = normalizedPreviewText(item.plainText)
+        return fallback.isEmpty ? nil : fallback
     }
 
     private func installQuickLookKeyMonitor() {
@@ -1374,6 +2161,47 @@ private final class ClipboardQuickLookItem: NSObject, QLPreviewItem {
 
     var previewItemTitle: String? {
         title
+    }
+}
+
+private final class AspectFitImageView: NSView {
+    var image: NSImage {
+        didSet { needsDisplay = true }
+    }
+
+    var contentInset: CGFloat {
+        didSet { needsDisplay = true }
+    }
+
+    init(image: NSImage, contentInset: CGFloat) {
+        self.image = image
+        self.contentInset = contentInset
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("未实现 init(coder:)")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard image.isValid, image.size.width > 0, image.size.height > 0 else { return }
+
+        let available = bounds.insetBy(dx: contentInset, dy: contentInset)
+        guard available.width > 0, available.height > 0 else { return }
+
+        let scale = min(available.width / image.size.width, available.height / image.size.height)
+        let drawSize = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let drawRect = NSRect(
+            x: available.midX - drawSize.width / 2,
+            y: available.midY - drawSize.height / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        )
+        image.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
     }
 }
 

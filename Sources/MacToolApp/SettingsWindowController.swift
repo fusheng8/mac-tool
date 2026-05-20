@@ -131,6 +131,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let clipboardExcludePasswordManagersSwitch = MacSwitchControl()
     private let clipboardRetentionDaysControl = MacNumberControl()
     private let clipboardPollIntervalControl = MacNumberControl()
+    private let clipboardStructuredPreviewLimitControl = MacNumberControl()
     private let clipboardExcludedAppsField = NSTextField(string: "")
     private let contextMenuEnabledSwitch = MacSwitchControl()
     private let archiveStripMacMetadataSwitch = MacSwitchControl()
@@ -220,6 +221,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         configureMaxHistoryControls()
         configureClipboardRetentionControls()
         configureClipboardPollIntervalControl()
+        configureClipboardStructuredPreviewLimitControl()
         configureDisplayReconnectDelayControl()
         configureArchiveCompressionLevelControl()
         buildUI()
@@ -318,6 +320,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         clipboardPollIntervalControl.maxValue = 10_000
         clipboardPollIntervalControl.increment = 100
         clipboardPollIntervalControl.onChange = { [weak self] _ in
+            self?.saveClipboardConfig()
+        }
+    }
+
+    private func configureClipboardStructuredPreviewLimitControl() {
+        clipboardStructuredPreviewLimitControl.minValue = 16
+        clipboardStructuredPreviewLimitControl.maxValue = 4096
+        clipboardStructuredPreviewLimitControl.increment = 64
+        clipboardStructuredPreviewLimitControl.onChange = { [weak self] _ in
             self?.saveClipboardConfig()
         }
     }
@@ -1348,6 +1359,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             controlRow(title: "监听间隔", detail: "剪切板变更检测频率，数值越小越及时，也会更频繁唤醒应用。", control: millisecondsControl(clipboardPollIntervalControl)),
             controlRow(title: "最多保留条数", detail: "范围 10 到 10000 条。", control: maxHistoryControl()),
             controlRow(title: "自动清理天数", detail: "0 表示不按天清理；收藏记录会保留。", control: daysControl(clipboardRetentionDaysControl)),
+            controlRow(title: "结构化预览上限", detail: "JSON、Markdown、CSV/TSV、代码等超过该大小时直接显示原始文本，避免预览卡顿。", control: kilobytesControl(clipboardStructuredPreviewLimitControl)),
             controlRow(title: "排除 App", detail: "输入 Bundle ID，多个用逗号或换行分隔；浏览器隐私窗口无法稳定识别，建议排除整个浏览器。", control: excludedAppsControl()),
             hintRow("默认按格式粘贴；在历史记录中右键可以选择按格式或原文本粘贴。", compact: true)
         ])
@@ -1924,6 +1936,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return stack
     }
 
+    private func kilobytesControl(_ control: MacNumberControl) -> NSView {
+        let unit = NSTextField(labelWithString: "KB")
+        unit.font = .systemFont(ofSize: 13)
+        unit.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [control, unit])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        return stack
+    }
+
     private func millisecondsControl(_ control: MacNumberControl) -> NSView {
         let unit = NSTextField(labelWithString: "毫秒")
         unit.font = .systemFont(ofSize: 13)
@@ -2207,6 +2231,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         maxHistoryCountControl.value = store.clipboard.maxHistoryCount
         clipboardRetentionDaysControl.value = store.clipboard.retentionDays
         clipboardPollIntervalControl.value = store.clipboard.pollIntervalMilliseconds
+        clipboardStructuredPreviewLimitControl.value = store.clipboard.structuredPreviewLimitKB
         clipboardExcludedAppsField.stringValue = store.clipboard.excludedBundleIdentifiers.joined(separator: ", ")
     }
 
@@ -2270,6 +2295,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         config.excludeKnownPasswordManagers = clipboardExcludePasswordManagersSwitch.state == .on
         config.retentionDays = clipboardRetentionDaysControl.value
         config.pollIntervalMilliseconds = ClipboardConfig.normalizedPollIntervalMilliseconds(clipboardPollIntervalControl.value)
+        config.structuredPreviewLimitKB = ClipboardConfig.normalizedStructuredPreviewLimitKB(clipboardStructuredPreviewLimitControl.value)
         config.excludedBundleIdentifiers = parsedExcludedBundleIdentifiers()
         config.maxHistoryCount = normalizedMaxHistoryCount()
         if let hotKey {
