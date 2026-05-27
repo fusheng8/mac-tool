@@ -2345,13 +2345,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func registerArchiveDocumentHandlers() {
-        let bundleIdentifier = SystemCapabilities.appBundleIdentifier as CFString
-        for fileExtension in ["zip", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "7z", "rar"] {
-            guard let type = UTType(filenameExtension: fileExtension) else {
-                continue
-            }
-            LSSetDefaultRoleHandlerForContentType(type.identifier as CFString, .all, bundleIdentifier)
-        }
+        SystemCapabilities.registerArchiveDocumentHandlers()
     }
 
     private func parsedExcludedBundleIdentifiers() -> [String] {
