@@ -1,5 +1,7 @@
 import AppKit
+import CoreServices
 import Foundation
+import UniformTypeIdentifiers
 
 enum MacAssistantNotifier {
     static func notify(title: String, message: String) {
@@ -14,6 +16,25 @@ enum MacAssistantNotifier {
 enum SystemCapabilities {
     static let finderExtensionBundleIdentifier = "com.fusheng.mac-tool.FinderSyncExtension"
     static let appBundleIdentifier = "com.fusheng.mac-tool"
+    static let archiveDocumentContentTypeIdentifiers = [
+        "public.zip-archive",
+        "public.tar-archive",
+        "org.gnu.gnu-zip-archive",
+        "org.gnu.gnu-tar-archive",
+        "org.bzip.bzip2-archive",
+        "org.bzip.bzip2-tar-archive",
+        "org.tukaani.xz-archive",
+        "org.tukaani.xz-tar-archive",
+        "org.7-zip.7-zip-archive",
+        "com.rarlab.rar-archive",
+        "com.rarlab.rar-archive-v4"
+    ]
+    private static let legacyAppBundleIdentifiers = [
+        "local.fusheng.displaycolorlock"
+    ]
+    private static let archiveDocumentFileExtensions = [
+        "zip", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "7z", "rar"
+    ]
 
     static func firstAvailableTool(_ names: [String]) -> URL? {
         let searchDirectories = ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]
@@ -66,6 +87,44 @@ enum SystemCapabilities {
             return (false, "Finder 扩展已安装但未启用。")
         }
         return (nil, output)
+    }
+
+    static func registerArchiveDocumentHandlers() {
+        let bundleIdentifier = appBundleIdentifier as CFString
+        for contentType in archiveDocumentContentTypes() {
+            LSSetDefaultRoleHandlerForContentType(contentType as CFString, .all, bundleIdentifier)
+        }
+        AppLogger.shared.info("压缩包默认打开方式已注册到当前应用。")
+    }
+
+    static func migrateLegacyArchiveDocumentHandlersIfNeeded() {
+        let legacyBundleIdentifiers = Set(legacyAppBundleIdentifiers.map { $0.lowercased() })
+        let bundleIdentifier = appBundleIdentifier as CFString
+        var migratedCount = 0
+
+        for contentType in archiveDocumentContentTypes() {
+            guard let currentHandler = LSCopyDefaultRoleHandlerForContentType(contentType as CFString, .all)?
+                .takeRetainedValue() as String?,
+                legacyBundleIdentifiers.contains(currentHandler.lowercased()) else {
+                continue
+            }
+            LSSetDefaultRoleHandlerForContentType(contentType as CFString, .all, bundleIdentifier)
+            migratedCount += 1
+        }
+
+        if migratedCount > 0 {
+            AppLogger.shared.info("已迁移旧版压缩包默认打开方式：\(migratedCount) 项。")
+        }
+    }
+
+    private static func archiveDocumentContentTypes() -> Set<String> {
+        var contentTypes = Set(archiveDocumentContentTypeIdentifiers)
+        for fileExtension in archiveDocumentFileExtensions {
+            if let type = UTType(filenameExtension: fileExtension) {
+                contentTypes.insert(type.identifier)
+            }
+        }
+        return contentTypes
     }
 
     static func registerBundledFinderExtensionIfAvailable() {

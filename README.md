@@ -272,6 +272,22 @@ security find-identity -v -p codesigning
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
 ```
 
+GitHub Actions 也支持使用固定签名 keychain。把本机 keychain 转成 base64 后配置到仓库 Secrets：
+
+```bash
+base64 -i /Users/fusheng/Desktop/fusheng.keychain | pbcopy
+```
+
+然后在 GitHub 仓库配置：
+
+```text
+MACOS_KEYCHAIN_BASE64      # 上面复制的 base64 内容
+MACOS_KEYCHAIN_PASSWORD    # keychain 密码
+MACOS_CODESIGN_IDENTITY    # 可选；不填时会自动取 keychain 中第一个 codesigning identity
+```
+
+如果未配置 `MACOS_KEYCHAIN_BASE64`，GitHub Actions 会继续回退到 ad-hoc 签名。
+
 ## 开发
 
 使用 Swift Package Manager 构建：

@@ -271,6 +271,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if store.contextMenu.enabled {
             SystemCapabilities.registerBundledFinderExtensionIfAvailable()
         }
+        SystemCapabilities.migrateLegacyArchiveDocumentHandlersIfNeeded()
+        if store.archive.registerAsDefaultArchiveOpener {
+            SystemCapabilities.registerArchiveDocumentHandlers()
+        }
         menuBar = MenuBarController(
             store: store,
             detector: detector,
@@ -490,13 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func registerArchiveDocumentHandlers() {
-        let bundleIdentifier = "com.fusheng.mac-tool" as CFString
-        for fileExtension in ["zip", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "7z", "rar"] {
-            guard let type = UTType(filenameExtension: fileExtension) else {
-                continue
-            }
-            LSSetDefaultRoleHandlerForContentType(type.identifier as CFString, .all, bundleIdentifier)
-        }
+        SystemCapabilities.registerArchiveDocumentHandlers()
     }
 
     private func handleContextMenuActionURL(_ url: URL) {

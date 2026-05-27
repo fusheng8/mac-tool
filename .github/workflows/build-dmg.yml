@@ -39,10 +39,48 @@ jobs:
             echo "APP_BUILD_VERSION=0.1.0" >> "$GITHUB_ENV"
           fi
 
+      - name: Install signing keychain
+        env:
+          MACOS_KEYCHAIN_BASE64: ${{ secrets.MACOS_KEYCHAIN_BASE64 }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          if [[ -z "$MACOS_KEYCHAIN_BASE64" ]]; then
+            echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "No signing keychain configured; using ad-hoc signing."
+            exit 0
+          fi
+
+          if [[ -z "$MACOS_KEYCHAIN_PASSWORD" ]]; then
+            echo "Missing MACOS_KEYCHAIN_PASSWORD repository secret" >&2
+            exit 1
+          fi
+
+          keychain_path="$RUNNER_TEMP/fusheng.keychain"
+          printf '%s' "$MACOS_KEYCHAIN_BASE64" | base64 --decode > "$keychain_path"
+          chmod 600 "$keychain_path"
+
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$keychain_path"
+
+          if [[ -z "$MACOS_CODESIGN_IDENTITY" ]]; then
+            MACOS_CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain_path" | awk -F '"' '/"/ { print $2; exit }')"
+          fi
+
+          if [[ -z "$MACOS_CODESIGN_IDENTITY" ]]; then
+            echo "No valid code signing identity found in signing keychain" >&2
+            exit 1
+          fi
+
+          echo "CODESIGN_IDENTITY=$MACOS_CODESIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "Using code signing identity: $MACOS_CODESIGN_IDENTITY"
+
       - name: Build DMG
         env:
           PACKAGE_ONLY: "1"
-          CODESIGN_IDENTITY: "-"
           DMG_NAME: "MacTool.dmg"
         run: scripts/build_dmg.sh
 

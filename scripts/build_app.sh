@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$ROOT_DIR/.build/Mac助手.app"
-INSTALL_DIR="$HOME/Applications"
+INSTALL_DIR="/Applications"
 INSTALLED_APP_DIR="$INSTALL_DIR/Mac助手.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -148,6 +148,20 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
                 <string>txz</string>
                 <string>7z</string>
                 <string>rar</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.zip-archive</string>
+                <string>public.tar-archive</string>
+                <string>org.gnu.gnu-zip-archive</string>
+                <string>org.gnu.gnu-tar-archive</string>
+                <string>org.bzip.bzip2-archive</string>
+                <string>org.bzip.bzip2-tar-archive</string>
+                <string>org.tukaani.xz-archive</string>
+                <string>org.tukaani.xz-tar-archive</string>
+                <string>org.7-zip.7-zip-archive</string>
+                <string>com.rarlab.rar-archive</string>
+                <string>com.rarlab.rar-archive-v4</string>
             </array>
         </dict>
     </array>
