@@ -577,11 +577,12 @@ final class ArchiveActionExecutor {
     private func extractArchive(_ archiveURL: URL, kind: ArchiveKind, to destination: URL, password: String?) throws {
         switch kind {
         case .zip:
+            var arguments = ["-qq", "-o"]
             if let password, !password.isEmpty {
-                try run(tool: "unzip", arguments: ["-qq", "-P", password, archiveURL.path, "-d", destination.path])
-            } else {
-                try run(tool: "ditto", arguments: ["-x", "-k", archiveURL.path, destination.path])
+                arguments += ["-P", password]
             }
+            arguments += [archiveURL.path, "-d", destination.path]
+            try run(tool: "unzip", arguments: arguments)
         case .tar, .tarGzip, .tarBzip2, .tarXz:
             try run(tool: "tar", arguments: ["-xf", archiveURL.path, "-C", destination.path])
         case .sevenZip, .rar:
