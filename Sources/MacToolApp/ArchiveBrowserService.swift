@@ -112,7 +112,7 @@ final class ArchiveBrowserService {
             } catch {
                 throw ArchiveBrowserError.passwordRequired
             }
-        case .sevenZip, .rar:
+        case .sevenZip:
             guard let tool = firstAvailableTool(["7zz", "7z"]) else {
                 throw ArchiveBrowserError.missingTool("7z/7zz")
             }
@@ -120,6 +120,23 @@ final class ArchiveBrowserService {
                 try run(executableURL: tool, arguments: ["t", "-p\(password)", archiveURL.path])
             } catch ArchiveBrowserError.missingTool {
                 throw ArchiveBrowserError.missingTool("7z/7zz")
+            } catch {
+                throw ArchiveBrowserError.passwordRequired
+            }
+        case .rar:
+            if let tool = firstAvailableTool(["unrar"]) {
+                do {
+                    try run(executableURL: tool, arguments: ["t", "-p\(password)", archiveURL.path])
+                } catch {
+                    throw ArchiveBrowserError.passwordRequired
+                }
+                return
+            }
+            guard let tool = firstAvailableTool(["7zz", "7z"]) else {
+                throw ArchiveBrowserError.missingTool("unrar/7z/7zz")
+            }
+            do {
+                try run(executableURL: tool, arguments: ["t", "-p\(password)", archiveURL.path])
             } catch {
                 throw ArchiveBrowserError.passwordRequired
             }
@@ -136,8 +153,10 @@ final class ArchiveBrowserService {
             return (try listTarEntries(), false)
         case .gzip, .bzip2, .xz:
             return ([ArchiveBrowserEntry(path: singleFileName(), size: nil, isDirectory: false)], false)
-        case .sevenZip, .rar:
+        case .sevenZip:
             return try listSevenZipEntries(password: password)
+        case .rar:
+            return try listRarEntries(password: password)
         }
     }
 
@@ -152,8 +171,10 @@ final class ArchiveBrowserService {
             try extractTar(entries: fileEntries, to: destination)
         case .gzip, .bzip2, .xz:
             try extractSingleFile(to: destination)
-        case .sevenZip, .rar:
+        case .sevenZip:
             try extractSevenZip(entries: fileEntries, to: destination, password: password)
+        case .rar:
+            try extractRar(entries: fileEntries, to: destination, password: password)
         }
     }
 
@@ -428,6 +449,69 @@ final class ArchiveBrowserService {
         return (includeHidden ? entries : entries.filter(isVisibleEntry), mayRequirePassword)
     }
 
+    private func listRarEntries(password: String?, includeHidden: Bool = false) throws -> (entries: [ArchiveBrowserEntry], mayRequirePassword: Bool) {
+        guard let tool = firstAvailableTool(["unrar"]) else {
+            return try listSevenZipEntries(password: password, includeHidden: includeHidden)
+        }
+
+        var arguments = ["lt"]
+        if let password, !password.isEmpty {
+            arguments.append("-p\(password)")
+        }
+        arguments.append(archiveURL.path)
+        let output = try run(executableURL: tool, arguments: arguments).stdout
+        let entries = parseUnrarVerboseEntries(output)
+        return (includeHidden ? entries : entries.filter(isVisibleEntry), false)
+    }
+
+    private func parseUnrarVerboseEntries(_ output: String) -> [ArchiveBrowserEntry] {
+        var entries: [ArchiveBrowserEntry] = []
+        var currentPath: String?
+        var currentSize: Int64?
+        var currentType = ""
+        var currentModifiedAt: Date?
+
+        func appendCurrentEntry() {
+            guard let currentPath else { return }
+            entries.append(ArchiveBrowserEntry(
+                path: currentPath,
+                size: currentSize,
+                isDirectory: currentType == "Directory",
+                modifiedAt: currentModifiedAt
+            ))
+        }
+
+        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("Name: ") {
+                appendCurrentEntry()
+                currentPath = String(trimmed.dropFirst("Name: ".count))
+                currentSize = nil
+                currentType = ""
+                currentModifiedAt = nil
+            } else if trimmed.hasPrefix("Type: ") {
+                currentType = String(trimmed.dropFirst("Type: ".count))
+            } else if trimmed.hasPrefix("Size: ") {
+                currentSize = Int64(String(trimmed.dropFirst("Size: ".count)))
+            } else if trimmed.hasPrefix("mtime: ") {
+                currentModifiedAt = parseUnrarDate(String(trimmed.dropFirst("mtime: ".count)))
+            }
+        }
+        appendCurrentEntry()
+        return entries
+    }
+
+    private func parseUnrarDate(_ value: String) -> Date? {
+        let normalized = value
+            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init) ?? value
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.date(from: normalized.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     private func delete(paths: [String], password: String?) throws {
         let paths = Array(Set(paths)).filter { !$0.isEmpty }
         guard !paths.isEmpty else { return }
@@ -481,6 +565,31 @@ final class ArchiveBrowserService {
     private func extractSevenZip(entries: [ArchiveBrowserEntry], to destination: URL, password: String?) throws {
         guard let tool = firstAvailableTool(["7zz", "7z"]) else {
             throw ArchiveBrowserError.missingTool("7z/7zz")
+        }
+        var arguments = ["x", "-y", "-o\(destination.path)"]
+        if let password, !password.isEmpty {
+            arguments.append("-p\(password)")
+        }
+        arguments.append(archiveURL.path)
+        arguments += entries.map(\.path)
+        try run(executableURL: tool, arguments: arguments)
+    }
+
+    private func extractRar(entries: [ArchiveBrowserEntry], to destination: URL, password: String?) throws {
+        if let tool = firstAvailableTool(["unrar"]) {
+            var arguments = ["x", "-idq", "-y"]
+            if let password, !password.isEmpty {
+                arguments.append("-p\(password)")
+            }
+            arguments.append(archiveURL.path)
+            arguments += entries.map(\.path)
+            arguments.append(destination.path)
+            try run(executableURL: tool, arguments: arguments)
+            return
+        }
+
+        guard let tool = firstAvailableTool(["7zz", "7z"]) else {
+            throw ArchiveBrowserError.missingTool("unrar/7z/7zz")
         }
         var arguments = ["x", "-y", "-o\(destination.path)"]
         if let password, !password.isEmpty {

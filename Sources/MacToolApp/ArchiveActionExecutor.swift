@@ -7,12 +7,12 @@ func archiveMissingToolMessage(_ name: String) -> String {
     let requiredTools: String
     let installSuggestion: String
 
-    if lowercased.contains("7z") || lowercased.contains("7zz") {
+    if lowercased.contains("unrar") || lowercased.contains("rar") {
+        requiredTools = "unrar 或 rar"
+        installSuggestion = "brew install rar"
+    } else if lowercased.contains("7z") || lowercased.contains("7zz") {
         requiredTools = "7zz 或 7z"
         installSuggestion = "brew install sevenzip"
-    } else if lowercased.contains("rar") {
-        requiredTools = "rar"
-        installSuggestion = "brew install rar"
     } else if lowercased.contains("xz") || lowercased.contains("unxz") {
         requiredTools = "xz 或 unxz"
         installSuggestion = "brew install xz"
@@ -540,8 +540,10 @@ final class ArchiveActionExecutor {
             output = try run(tool: "zipinfo", arguments: ["-1", archiveURL.path]).stdout
         case .tar, .tarGzip, .tarBzip2, .tarXz:
             output = try run(tool: "tar", arguments: ["-tf", archiveURL.path]).stdout
-        case .sevenZip, .rar:
+        case .sevenZip:
             output = try sevenZipEntries(in: archiveURL, password: password)
+        case .rar:
+            output = try rarEntries(in: archiveURL, password: password)
         case .gzip, .bzip2, .xz:
             return [archiveBaseName(for: archiveURL)]
         }
@@ -574,6 +576,18 @@ final class ArchiveActionExecutor {
         return paths.joined(separator: "\n")
     }
 
+    private func rarEntries(in archiveURL: URL, password: String?) throws -> String {
+        if let tool = firstAvailableTool(["unrar"]) {
+            var arguments = ["lb"]
+            if let password, !password.isEmpty {
+                arguments.append("-p\(password)")
+            }
+            arguments.append(archiveURL.path)
+            return try run(executableURL: tool, arguments: arguments).stdout
+        }
+        return try sevenZipEntries(in: archiveURL, password: password)
+    }
+
     private func extractArchive(_ archiveURL: URL, kind: ArchiveKind, to destination: URL, password: String?) throws {
         switch kind {
         case .zip:
@@ -585,7 +599,7 @@ final class ArchiveActionExecutor {
             try run(tool: "unzip", arguments: arguments)
         case .tar, .tarGzip, .tarBzip2, .tarXz:
             try run(tool: "tar", arguments: ["-xf", archiveURL.path, "-C", destination.path])
-        case .sevenZip, .rar:
+        case .sevenZip:
             guard let tool = firstAvailableTool(["7zz", "7z"]) else {
                 throw ArchiveActionError.missingTool("7z/7zz")
             }
@@ -595,9 +609,33 @@ final class ArchiveActionExecutor {
             }
             arguments.append(archiveURL.path)
             try run(executableURL: tool, arguments: arguments)
+        case .rar:
+            try extractRarArchive(archiveURL, to: destination, password: password)
         case .gzip, .bzip2, .xz:
             throw ArchiveActionError.unsupportedFormat(archiveURL.lastPathComponent)
         }
+    }
+
+    private func extractRarArchive(_ archiveURL: URL, to destination: URL, password: String?) throws {
+        if let tool = firstAvailableTool(["unrar"]) {
+            var arguments = ["x", "-idq", "-y"]
+            if let password, !password.isEmpty {
+                arguments.append("-p\(password)")
+            }
+            arguments += [archiveURL.path, destination.path]
+            try run(executableURL: tool, arguments: arguments)
+            return
+        }
+
+        guard let tool = firstAvailableTool(["7zz", "7z"]) else {
+            throw ArchiveActionError.missingTool("unrar/7z/7zz")
+        }
+        var arguments = ["x", "-y", "-o\(destination.path)"]
+        if let password, !password.isEmpty {
+            arguments.append("-p\(password)")
+        }
+        arguments.append(archiveURL.path)
+        try run(executableURL: tool, arguments: arguments)
     }
 
     private func extractSingleFileCompression(_ archiveURL: URL, kind: ArchiveKind, to destination: URL) throws {

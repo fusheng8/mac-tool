@@ -44,6 +44,40 @@ final class ArchiveActionExecutorTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: extractedFile, encoding: .utf8), "console.log('ok')\n")
     }
 
+    func testSmartExtractRarPrefersUnrarCompatiblePath() throws {
+        guard firstAvailableTool("rar") != nil else {
+            throw XCTSkip("rar is not installed")
+        }
+        guard firstAvailableTool("unrar") != nil else {
+            throw XCTSkip("unrar is not installed")
+        }
+
+        let root = try makeTemporaryDirectory()
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let nestedDirectory = sourceRoot.appendingPathComponent("log/checkins", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
+        try "{\"ok\":true}\n".write(
+            to: nestedDirectory.appendingPathComponent("2026-06-02.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let archiveURL = root.appendingPathComponent("fixture.rar")
+        try runTool(
+            name: "rar",
+            arguments: ["a", "-idq", "-m3", archiveURL.path, "log"],
+            currentDirectory: sourceRoot
+        )
+
+        try ArchiveActionExecutor().smartExtract(urls: [archiveURL])
+
+        let extractedFile = root
+            .appendingPathComponent("fixture", isDirectory: true)
+            .appendingPathComponent("log/checkins", isDirectory: true)
+            .appendingPathComponent("2026-06-02.jsonl")
+        XCTAssertEqual(try String(contentsOf: extractedFile, encoding: .utf8), "{\"ok\":true}\n")
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacToolAppTests-\(UUID().uuidString)", isDirectory: true)
