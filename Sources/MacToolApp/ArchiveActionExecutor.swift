@@ -785,21 +785,20 @@ final class ArchiveActionExecutor {
         var outputHandle: FileHandle?
         var stdoutData = Data()
         var stderrData = Data()
-        let outputLock = NSLock()
+        let outputGroup = DispatchGroup()
 
-        stdoutPipe?.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            outputLock.lock()
-            stdoutData.append(data)
-            outputLock.unlock()
+        if let stdoutPipe {
+            outputGroup.enter()
+            DispatchQueue.global(qos: .utility).async {
+                stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                outputGroup.leave()
+            }
         }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            outputLock.lock()
-            stderrData.append(data)
-            outputLock.unlock()
+
+        outputGroup.enter()
+        DispatchQueue.global(qos: .utility).async {
+            stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            outputGroup.leave()
         }
 
         if let standardOutputFile {
@@ -814,17 +813,12 @@ final class ArchiveActionExecutor {
         try process.run()
         process.waitUntilExit()
         try outputHandle?.close()
+        outputGroup.wait()
 
-        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-        outputLock.lock()
-        let capturedStdout = stdoutData
-        let capturedStderr = stderrData
-        outputLock.unlock()
         let result = CommandResult(
             status: process.terminationStatus,
-            stdout: String(data: capturedStdout, encoding: .utf8) ?? "",
-            stderr: String(data: capturedStderr, encoding: .utf8) ?? ""
+            stdout: String(data: stdoutData, encoding: .utf8) ?? "",
+            stderr: String(data: stderrData, encoding: .utf8) ?? ""
         )
         guard result.status == 0 else {
             let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
