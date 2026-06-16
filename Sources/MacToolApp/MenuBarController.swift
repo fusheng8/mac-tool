@@ -54,6 +54,7 @@ final class MenuBarController {
         menu.addItem(settingsPageItem("压缩/解压", .archive))
         menu.addItem(settingsPageItem("右键菜单", .contextMenu))
         menu.addItem(settingsPageItem("端口管理", .portManagement))
+        menu.addItem(settingsPageItem("应用卸载", .appUninstall))
         menu.addItem(settingsPageItem("设置", .settings))
         menu.addItem(.separator())
 
@@ -142,6 +143,10 @@ final class MenuBarController {
 
     func openPortManagement() {
         openSettings(page: .portManagement)
+    }
+
+    func openApplicationUninstaller() {
+        openSettings(page: .appUninstall)
     }
 
     func openArchiveSettings() {

@@ -21,6 +21,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         case archive
         case contextMenu
         case portManagement
+        case appUninstall
         case permissions
     }
 
@@ -124,6 +125,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let archiveSidebarButton = SidebarNavItem(title: "压缩/解压", symbolName: "archivebox")
     private let contextMenuSidebarButton = SidebarNavItem(title: "右键菜单", symbolName: "cursorarrow.click.2")
     private let portManagementSidebarButton = SidebarNavItem(title: "端口管理", symbolName: "network")
+    private let appUninstallSidebarButton = SidebarNavItem(title: "应用卸载", symbolName: "trash")
     private let titleLabel = NSTextField(labelWithString: "")
     private let closeDisplaySwitch = MacSwitchControl()
     private let clipboardEnabledSwitch = MacSwitchControl()
@@ -144,8 +146,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var archiveFormatSwitches: [ArchiveFormat: MacSwitchControl] = [:]
     private let maxHistoryCountControl = MacNumberControl()
     private let portManagementView = PortManagementView()
+    private let applicationUninstallerView = ApplicationUninstallerView()
     private let resolutionPopup = NSPopUpButton()
     private var portManagementWidthConstraint: NSLayoutConstraint?
+    private var applicationUninstallerWidthConstraint: NSLayoutConstraint?
     private var displayModeOptions: [DisplayModeOption] = []
     private weak var resolutionStatusLabel: NSTextField?
     private var pendingDisplayModeConfirmation: PendingDisplayModeConfirmation?
@@ -391,8 +395,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         configureSidebarButton(archiveSidebarButton, page: .archive)
         configureSidebarButton(contextMenuSidebarButton, page: .contextMenu)
         configureSidebarButton(portManagementSidebarButton, page: .portManagement)
+        configureSidebarButton(appUninstallSidebarButton, page: .appUninstall)
 
-        let stack = NSStackView(views: [sidebarSearchField, systemOverviewSidebarButton, displaySidebarButton, clipboardSidebarButton, archiveSidebarButton, contextMenuSidebarButton, portManagementSidebarButton, settingsSidebarButton])
+        let stack = NSStackView(views: [sidebarSearchField, systemOverviewSidebarButton, displaySidebarButton, clipboardSidebarButton, archiveSidebarButton, contextMenuSidebarButton, portManagementSidebarButton, appUninstallSidebarButton, settingsSidebarButton])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.distribution = .fill
@@ -571,6 +576,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             reloadContextMenuSettings()
         case .portManagement:
             reloadPortManagementSettings()
+        case .appUninstall:
+            reloadApplicationUninstallerSettings()
         }
         updateSystemOverviewTimer()
     }
@@ -594,6 +601,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             pageTitleLabel.stringValue = "Finder 右键菜单扩展"
         case .portManagement:
             pageTitleLabel.stringValue = "端口管理"
+        case .appUninstall:
+            pageTitleLabel.stringValue = "应用卸载"
         }
     }
 
@@ -605,6 +614,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         styleSidebarButton(archiveSidebarButton, selected: selectedSettingsPage == .archive)
         styleSidebarButton(contextMenuSidebarButton, selected: selectedSettingsPage == .contextMenu)
         styleSidebarButton(portManagementSidebarButton, selected: selectedSettingsPage == .portManagement)
+        styleSidebarButton(appUninstallSidebarButton, selected: selectedSettingsPage == .appUninstall)
     }
 
     private func updateSidebarSearchResults() {
@@ -616,6 +626,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             (archiveSidebarButton, .archive, ["压缩", "解压", "归档", "zip", "tar", "rar", "7z", "archive", "extract", "compress"]),
             (contextMenuSidebarButton, .contextMenu, ["右键菜单", "右键", "菜单", "finder", "context", "menu"]),
             (portManagementSidebarButton, .portManagement, ["端口管理", "端口", "占用", "进程", "应用", "路径", "port", "pid", "process"]),
+            (appUninstallSidebarButton, .appUninstall, ["应用卸载", "卸载", "应用", "残留", "废纸篓", "bundle", "app", "application", "uninstall", "trash"]),
             (settingsSidebarButton, .settings, ["设置", "通用", "配置", "导入", "导出", "备份", "同步", "icloud", "权限", "授权", "辅助功能", "自动化", "扩展", "完全磁盘访问", "privacy", "permission", "accessibility", "automation", "full disk", "files"])
         ]
 
@@ -649,6 +660,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             tint = MacAssistantUI.Color.purple
         case .portManagement:
             tint = MacAssistantUI.Color.blue
+        case .appUninstall:
+            tint = NSColor.systemRed
         case .permissions:
             tint = MacAssistantUI.Color.green
         case .none:
@@ -853,6 +866,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         contentStack.addArrangedSubview(portManagementView)
         portManagementView.refreshIfNeeded()
+    }
+
+    private func reloadApplicationUninstallerSettings() {
+        contentStack.arrangedSubviews.forEach { view in
+            contentStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        if applicationUninstallerWidthConstraint == nil {
+            applicationUninstallerWidthConstraint = applicationUninstallerView.widthAnchor.constraint(equalToConstant: Layout.contentWidth)
+            applicationUninstallerWidthConstraint?.isActive = true
+        }
+        contentStack.addArrangedSubview(applicationUninstallerView)
+        applicationUninstallerView.refreshIfNeeded()
     }
 
     private func emptyState() -> NSView {
