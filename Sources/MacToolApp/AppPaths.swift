@@ -76,6 +76,10 @@ enum AppPaths {
         logsDirectory.appendingPathComponent("app.log")
     }
 
+    static var uninstallAuditLogURL: URL {
+        logsDirectory.appendingPathComponent("uninstall-audit.log")
+    }
+
     static func ensureDirectories() throws {
         try FileManager.default.createDirectory(at: applicationSupportDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)

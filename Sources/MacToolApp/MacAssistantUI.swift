@@ -72,6 +72,10 @@ final class LayerBackedView: NSView {
     }
 }
 
+final class MacFlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 final class MacSwitchControl: NSControl {
     var state: NSControl.StateValue = .off {
         didSet { updateLayers(animated: true) }
@@ -145,6 +149,91 @@ final class MacSwitchControl: NSControl {
         thumbLayer.frame = knobFrame
         thumbLayer.cornerRadius = knobSize / 2
         CATransaction.commit()
+    }
+}
+
+final class MacCheckboxControl: NSControl {
+    var state: NSControl.StateValue = .off {
+        didSet { needsDisplay = true }
+    }
+
+    var tintColor = MacAssistantUI.Color.blue {
+        didSet { needsDisplay = true }
+    }
+
+    private var isPressed = false {
+        didSet { needsDisplay = true }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 18, height: 18)
+    }
+
+    override var isEnabled: Bool {
+        didSet {
+            if !isEnabled { isPressed = false }
+            needsDisplay = true
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        isPressed = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isEnabled else { return }
+        isPressed = bounds.contains(convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isEnabled else { return }
+        let shouldToggle = isPressed && bounds.contains(convert(event.locationInWindow, from: nil))
+        isPressed = false
+        if shouldToggle {
+            state = state == .on ? .off : .on
+            sendAction(action, to: target)
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let enabledAlpha: CGFloat = isEnabled ? 1 : 0.42
+        let rect = bounds.insetBy(dx: 0.75, dy: 0.75)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
+        let selected = state == .on
+        (selected ? tintColor.withAlphaComponent(isPressed ? 0.24 : 0.18) : NSColor.white.withAlphaComponent(0.86 * enabledAlpha)).setFill()
+        path.fill()
+        (selected ? tintColor : MacAssistantUI.Color.hairline).withAlphaComponent(enabledAlpha).setStroke()
+        path.lineWidth = 1.5
+        path.stroke()
+
+        if selected, let icon = MacAssistantUI.symbol("checkmark", pointSize: 11, weight: .bold) {
+            let iconRect = NSRect(x: floor((bounds.width - 12) / 2), y: floor((bounds.height - 12) / 2), width: 12, height: 12)
+            let tintedIcon = NSImage(size: iconRect.size)
+            tintedIcon.lockFocus()
+            icon.draw(in: NSRect(origin: .zero, size: iconRect.size), from: .zero, operation: .sourceOver, fraction: 1)
+            tintColor.withAlphaComponent(enabledAlpha).setFill()
+            NSRect(origin: .zero, size: iconRect.size).fill(using: .sourceIn)
+            tintedIcon.unlockFocus()
+            tintedIcon.draw(in: iconRect, from: .zero, operation: .sourceOver, fraction: 1)
+        }
+    }
+
+    private func setup() {
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 18).isActive = true
+        heightAnchor.constraint(equalToConstant: 18).isActive = true
     }
 }
 
@@ -224,7 +313,16 @@ final class MacSearchField: NSControl, NSTextInputClient {
     private var showsCaret = false
     private var caretTimer: Timer?
 
-    override var acceptsFirstResponder: Bool { true }
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override var isEnabled: Bool {
+        didSet {
+            if !isEnabled, isFocused {
+                window?.makeFirstResponder(nil)
+            }
+            needsDisplay = true
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -257,10 +355,12 @@ final class MacSearchField: NSControl, NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
         window?.makeFirstResponder(self)
     }
 
     override func keyDown(with event: NSEvent) {
+        guard isEnabled else { return }
         if hasMarkedText(), inputContext?.handleEvent(event) == true {
             return
         }
@@ -307,9 +407,10 @@ final class MacSearchField: NSControl, NSTextInputClient {
 
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
-        NSColor.white.withAlphaComponent(0.70).setFill()
+        let enabledAlpha: CGFloat = isEnabled ? 1 : 0.42
+        NSColor.white.withAlphaComponent(0.70 * enabledAlpha).setFill()
         path.fill()
-        (isFocused ? MacAssistantUI.Color.blue.withAlphaComponent(0.70) : NSColor(calibratedRed: 0.66, green: 0.69, blue: 0.74, alpha: 0.86)).setStroke()
+        (isFocused ? MacAssistantUI.Color.blue.withAlphaComponent(0.70) : NSColor(calibratedRed: 0.66, green: 0.69, blue: 0.74, alpha: 0.86 * enabledAlpha)).setStroke()
         path.lineWidth = 1
         path.stroke()
 
@@ -317,7 +418,7 @@ final class MacSearchField: NSControl, NSTextInputClient {
             let tintedIcon = NSImage(size: icon.size)
             tintedIcon.lockFocus()
             icon.draw(in: NSRect(origin: .zero, size: icon.size), from: .zero, operation: .sourceOver, fraction: 1)
-            NSColor.secondaryLabelColor.setFill()
+            NSColor.secondaryLabelColor.withAlphaComponent(enabledAlpha).setFill()
             NSRect(origin: .zero, size: icon.size).fill(using: .sourceAtop)
             tintedIcon.unlockFocus()
 
@@ -328,7 +429,7 @@ final class MacSearchField: NSControl, NSTextInputClient {
         let displayText = text + markedText
         let isPlaceholderVisible = displayText.isEmpty
         let value = isPlaceholderVisible ? placeholder : displayText
-        let color = isPlaceholderVisible ? NSColor.secondaryLabelColor : NSColor.labelColor
+        let color = (isPlaceholderVisible ? NSColor.secondaryLabelColor : NSColor.labelColor).withAlphaComponent(enabledAlpha)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
             .foregroundColor: color
