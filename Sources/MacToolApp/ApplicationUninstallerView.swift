@@ -399,8 +399,8 @@ final class ApplicationUninstallerView: NSView {
             row.isEnabled = app.canUninstall && !isBusy
             row.target = self
             row.action = #selector(rowToggled(_:))
-            row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
             listStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
             rowViewsByID[app.id] = row
         }
         statusLabel.stringValue = statusText()
