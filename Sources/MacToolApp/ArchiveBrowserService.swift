@@ -555,7 +555,11 @@ final class ArchiveBrowserService {
         arguments.append(archiveURL.path)
         arguments += entries.map(\.path)
         arguments += ["-d", destination.path]
-        try run(tool: "unzip", arguments: arguments)
+        do {
+            try run(tool: "unzip", arguments: arguments)
+        } catch ArchiveBrowserError.extractionFailed(let message) where zipExtractionShouldFallbackToSevenZip(message: message) {
+            try extractSevenZip(entries: entries, to: destination, password: password)
+        }
     }
 
     private func extractTar(entries: [ArchiveBrowserEntry], to destination: URL) throws {

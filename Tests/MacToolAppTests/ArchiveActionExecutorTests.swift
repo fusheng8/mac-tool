@@ -78,6 +78,15 @@ final class ArchiveActionExecutorTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: extractedFile, encoding: .utf8), "{\"ok\":true}\n")
     }
 
+    func testZipExtractionFallbackDetectsUnzipWritePrompt() {
+        let message = """
+        User/User_76561198697327662/Player/RGD_Users - ����.rgd:  write error (disk full?).  Continue? (y/n/^C) fchmod (file attributes) error: Bad file descriptor
+        warning:  cannot set modif./access times
+        """
+
+        XCTAssertTrue(zipExtractionShouldFallbackToSevenZip(message: message))
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacToolAppTests-\(UUID().uuidString)", isDirectory: true)

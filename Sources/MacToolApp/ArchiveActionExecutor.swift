@@ -28,6 +28,14 @@ func archiveMissingToolMessage(_ name: String) -> String {
     """
 }
 
+func zipExtractionShouldFallbackToSevenZip(message: String) -> Bool {
+    let lowercased = message.lowercased()
+    return lowercased.contains("write error")
+        || lowercased.contains("continue? (y/n/^c)")
+        || lowercased.contains("fchmod")
+        || lowercased.contains("cannot set modif./access times")
+}
+
 enum ArchiveActionError: LocalizedError {
     case emptySelection
     case expectedSingleArchive
@@ -596,7 +604,11 @@ final class ArchiveActionExecutor {
                 arguments += ["-P", password]
             }
             arguments += [archiveURL.path, "-d", destination.path]
-            try run(tool: "unzip", arguments: arguments)
+            do {
+                try run(tool: "unzip", arguments: arguments)
+            } catch ArchiveActionError.commandFailed(let message) where zipExtractionShouldFallbackToSevenZip(message: message) {
+                try extractZipArchiveWithSevenZip(archiveURL, to: destination, password: password)
+            }
         case .tar, .tarGzip, .tarBzip2, .tarXz:
             try run(tool: "tar", arguments: ["-xf", archiveURL.path, "-C", destination.path])
         case .sevenZip:
@@ -614,6 +626,18 @@ final class ArchiveActionExecutor {
         case .gzip, .bzip2, .xz:
             throw ArchiveActionError.unsupportedFormat(archiveURL.lastPathComponent)
         }
+    }
+
+    private func extractZipArchiveWithSevenZip(_ archiveURL: URL, to destination: URL, password: String?) throws {
+        guard let tool = firstAvailableTool(["7zz", "7z"]) else {
+            throw ArchiveActionError.missingTool("7z/7zz")
+        }
+        var arguments = ["x", "-y", "-o\(destination.path)"]
+        if let password, !password.isEmpty {
+            arguments.append("-p\(password)")
+        }
+        arguments.append(archiveURL.path)
+        try run(executableURL: tool, arguments: arguments)
     }
 
     private func extractRarArchive(_ archiveURL: URL, to destination: URL, password: String?) throws {
