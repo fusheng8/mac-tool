@@ -728,7 +728,11 @@ final class ArchiveBrowserService {
         }
         process.standardError = stderrPipe
 
-        try process.run()
+        do {
+            try launchProcessSafely(process, executableURL: executableURL)
+        } catch {
+            throw ArchiveBrowserError.extractionFailed(error.localizedDescription)
+        }
         process.waitUntilExit()
         (process.standardOutput as? FileHandle)?.closeFile()
 

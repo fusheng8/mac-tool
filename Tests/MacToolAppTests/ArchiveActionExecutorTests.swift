@@ -87,6 +87,59 @@ final class ArchiveActionExecutorTests: XCTestCase {
         XCTAssertTrue(zipExtractionShouldFallbackToSevenZip(message: message))
     }
 
+    func testArchiveBrowserDeleteZipEntryDoesNotCrashAndUpdatesArchive() throws {
+        let root = try makeTemporaryDirectory()
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        try "delete me\n".write(to: sourceRoot.appendingPathComponent("remove.txt"), atomically: true, encoding: .utf8)
+        try "keep me\n".write(to: sourceRoot.appendingPathComponent("keep.txt"), atomically: true, encoding: .utf8)
+
+        let archiveURL = root.appendingPathComponent("fixture.zip")
+        try runTool(
+            name: "zip",
+            arguments: ["-q", archiveURL.path, "remove.txt", "keep.txt"],
+            currentDirectory: sourceRoot
+        )
+
+        let service = try ArchiveBrowserService(archiveURL: archiveURL)
+        let entries = try service.listEntries().entries
+        let removedEntry = try XCTUnwrap(entries.first { $0.path == "remove.txt" })
+
+        try service.delete(entries: [removedEntry], password: nil)
+
+        let remainingPaths = try service.listEntries().entries.map(\.path)
+        XCTAssertFalse(remainingPaths.contains("remove.txt"))
+        XCTAssertTrue(remainingPaths.contains("keep.txt"))
+    }
+
+    func testLaunchProcessSafelyReportsUnsetExecutableWithoutCrashing() throws {
+        let shellURL = URL(fileURLWithPath: "/bin/sh")
+        let process = Process()
+
+        XCTAssertThrowsError(try launchProcessSafely(process, executableURL: shellURL)) { error in
+            guard let launchError = error as? ProcessLaunchError else {
+                return XCTFail("Expected ProcessLaunchError, got \(error)")
+            }
+            XCTAssertTrue(launchError.localizedDescription.contains("未设置执行文件路径"))
+        }
+    }
+
+    func testLaunchProcessSafelyReportsNonExecutableFileWithoutCrashing() throws {
+        let root = try makeTemporaryDirectory()
+        let executableURL = root.appendingPathComponent("tool")
+        try "#!/bin/sh\nexit 0\n".write(to: executableURL, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = executableURL
+
+        XCTAssertThrowsError(try launchProcessSafely(process, executableURL: executableURL)) { error in
+            guard let launchError = error as? ProcessLaunchError else {
+                return XCTFail("Expected ProcessLaunchError, got \(error)")
+            }
+            XCTAssertTrue(launchError.localizedDescription.contains("执行文件不存在或不可执行"))
+        }
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacToolAppTests-\(UUID().uuidString)", isDirectory: true)

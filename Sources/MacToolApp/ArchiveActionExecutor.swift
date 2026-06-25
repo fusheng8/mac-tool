@@ -834,7 +834,11 @@ final class ArchiveActionExecutor {
         }
         process.standardError = stderrPipe
 
-        try process.run()
+        do {
+            try launchProcessSafely(process, executableURL: executableURL)
+        } catch {
+            throw ArchiveActionError.commandFailed(error.localizedDescription)
+        }
         process.waitUntilExit()
         try outputHandle?.close()
         outputGroup.wait()

@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef __OBJC__
+#import <Foundation/Foundation.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -48,6 +52,10 @@ DCLStatus DCLSetDisplayEnabled(uint32_t runtimeDisplayID, bool enabled);
 DCLVCPReadResult DCLReadVCPByEDID(const char *edidUUID, uint8_t vcpCode);
 DCLStatus DCLWriteVCPByEDID(const char *edidUUID, uint8_t vcpCode, uint8_t value);
 const char *DCLStatusDescription(DCLStatus status);
+
+#ifdef __OBJC__
+bool DCLLaunchTaskSafely(NSTask *task, NSError **error, NSString **exceptionMessage);
+#endif
 
 #ifdef __cplusplus
 }
