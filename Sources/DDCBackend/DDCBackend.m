@@ -7,6 +7,25 @@
 #import <dlfcn.h>
 #import <unistd.h>
 
+bool DCLLaunchTaskSafely(NSTask *task, NSError **error, NSString **exceptionMessage) {
+    @try {
+        return [task launchAndReturnError:error];
+    } @catch (NSException *exception) {
+        NSString *name = exception.name ?: @"NSException";
+        NSString *reason = exception.reason ?: @"NSTask launch failed";
+        NSString *message = [NSString stringWithFormat:@"%@: %@", name, reason];
+        if (exceptionMessage != NULL) {
+            *exceptionMessage = message;
+        }
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"com.fusheng.mac-tool.process-launch"
+                                         code:1
+                                     userInfo:@{NSLocalizedDescriptionKey: message}];
+        }
+        return false;
+    }
+}
+
 typedef CFTypeRef IOAVServiceRef;
 
 extern IOAVServiceRef IOAVServiceCreateWithService(CFAllocatorRef allocator, io_service_t service);
