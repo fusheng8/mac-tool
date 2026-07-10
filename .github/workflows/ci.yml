@@ -15,7 +15,8 @@ concurrency:
 
 jobs:
   verify:
-    name: Build, test and package
+    # Keep this status context stable: main branch protection requires "Swift Build".
+    name: Swift Build
     runs-on: macos-15
     steps:
       - name: Checkout
