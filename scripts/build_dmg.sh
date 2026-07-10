@@ -7,18 +7,19 @@ APP_DIR="$ROOT_DIR/.build/$APP_NAME.app"
 DMG_ROOT="$ROOT_DIR/.build/dmg-root"
 DMG_DIR="$ROOT_DIR/.build"
 
-# Personal builds use ad-hoc signing by default. Override if you later add a
-# stable local certificate:
-# CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_dmg.sh
-DEFAULT_CODESIGN_IDENTITY="-"
-CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-$DEFAULT_CODESIGN_IDENTITY}"
-APP_VERSION="${APP_VERSION:-0.1.0}"
-APP_BUILD_VERSION="${APP_BUILD_VERSION:-$APP_VERSION}"
+APP_VERSION="${APP_VERSION:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")}"
+APP_BUILD_VERSION="${APP_BUILD_VERSION:-$(git -C "$ROOT_DIR" rev-list --count HEAD)}"
 DMG_NAME="${DMG_NAME:-}"
+if [[ "${ALLOW_ADHOC:-0}" == "1" ]]; then
+    CODESIGN_IDENTITY="-"
+elif [[ -z "${CODESIGN_IDENTITY:-}" || "$CODESIGN_IDENTITY" != "Apple Development:"* ]]; then
+    echo "DMG 构建需要固定 Apple Development 身份；仅开发验证可显式设置 ALLOW_ADHOC=1。" >&2
+    exit 1
+fi
 
 cd "$ROOT_DIR"
 
-CODESIGN_IDENTITY="$CODESIGN_IDENTITY" APP_VERSION="$APP_VERSION" APP_BUILD_VERSION="$APP_BUILD_VERSION" "$ROOT_DIR/scripts/build_app.sh"
+APP_VERSION="$APP_VERSION" APP_BUILD_VERSION="$APP_BUILD_VERSION" "$ROOT_DIR/scripts/build_app.sh"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIR/Contents/Info.plist")"
 if [[ -n "$DMG_NAME" ]]; then
@@ -40,7 +41,7 @@ hdiutil create \
     -format UDZO \
     "$DMG_PATH"
 
-codesign --force --sign "$CODESIGN_IDENTITY" "$DMG_PATH"
+codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$DMG_PATH"
 codesign --verify --deep --strict "$APP_DIR"
 codesign --verify "$DMG_PATH"
 
