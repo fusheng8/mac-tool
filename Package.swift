@@ -72,7 +72,7 @@ let package = Package(
             name: "MacToolFinderSync",
             dependencies: ["MacToolBridge"],
             swiftSettings: [
-                .swiftLanguageMode(.v5)
+                .swiftLanguageMode(.v6)
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
