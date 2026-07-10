@@ -2,11 +2,8 @@ import AppKit
 import Darwin
 import FinderSync
 import Foundation
+import MacToolBridge
 import os.log
-
-private extension Notification.Name {
-    static let macToolContextMenuAction = Notification.Name("com.fusheng.mac-tool.contextMenuAction")
-}
 
 final class FinderSyncExtension: FIFinderSync {
     private static let logger = Logger(subsystem: "com.fusheng.mac-tool.FinderSyncExtension", category: "FinderMenu")
@@ -88,7 +85,7 @@ final class FinderSyncExtension: FIFinderSync {
 
         let urls = selectedOrTargetedURLs()
         do {
-            forwardActionToMainApp(itemID: itemID, urls: urls)
+            try forwardActionToMainApp(itemID: itemID, urls: urls)
             Self.logger.info("performed action: \(itemID.rawValue, privacy: .public)")
         } catch {
             NSSound.beep()
@@ -107,14 +104,10 @@ final class FinderSyncExtension: FIFinderSync {
         return [Self.accountHomeDirectory().appendingPathComponent("Desktop", isDirectory: true)]
     }
 
-    private func forwardActionToMainApp(itemID: FinderContextMenuItemID, urls: [URL]) {
-        guard let actionURL = Self.contextMenuActionURL(itemID: itemID, urls: urls) else {
-            NSSound.beep()
-            return
-        }
+    private func forwardActionToMainApp(itemID: FinderContextMenuItemID, urls: [URL]) throws {
+        let actionURL = try Self.contextMenuActionURL(itemID: itemID, urls: urls)
         if !NSWorkspace.shared.open(actionURL) {
-            NSSound.beep()
-            Self.logger.error("failed to open context menu action URL")
+            throw FinderActionRequestError.invalidEncoding
         }
     }
 
@@ -138,13 +131,18 @@ final class FinderSyncExtension: FIFinderSync {
         return URL(fileURLWithPath: "/Users/\(NSUserName())", isDirectory: true)
     }
 
-    private static func contextMenuActionURL(itemID: FinderContextMenuItemID, urls: [URL]) -> URL? {
-        var components = URLComponents()
-        components.scheme = "macassistant"
-        components.host = "context-menu"
-        components.queryItems = [URLQueryItem(name: "action", value: itemID.rawValue)]
-        components.queryItems?.append(contentsOf: urls.map { URLQueryItem(name: "path", value: $0.path) })
-        return components.url
+    private static func contextMenuActionURL(itemID: FinderContextMenuItemID, urls: [URL]) throws -> URL {
+        guard let credentialURL = FinderConfigPaths.bridgeCredentialURLs.first(where: {
+            FileManager.default.fileExists(atPath: $0.path)
+        }) else {
+            throw FinderActionRequestError.missingCredential
+        }
+        let key = try BridgeCredentialFile.read(at: credentialURL)
+        let request = FinderActionRequest(
+            action: itemID.rawValue,
+            paths: Array(urls.prefix(100)).map { $0.standardizedFileURL.path }
+        )
+        return try FinderActionCodec.makeURL(request: request, keyData: key)
     }
 }
 
@@ -696,6 +694,10 @@ private enum FinderConfigPaths {
         ].uniquedByPath()
     }
 
+    static var bridgeCredentialURLs: [URL] {
+        urls.map { $0.deletingLastPathComponent().appendingPathComponent("bridge.key") }
+    }
+
     private static func configURL(home: URL) -> URL {
         home
             .appendingPathComponent("Library/Application Support", isDirectory: true)
@@ -801,10 +803,6 @@ private final class FinderContextMenuActionExecutor {
 
     private func createPowerPointFile(in directory: URL) throws {
         let url = uniqueURL(in: directory, baseName: "新建 PPT", extension: "pptx")
-        if let templateURL = Self.powerPointTemplateURL {
-            try FileManager.default.copyItem(at: templateURL, to: url)
-            return
-        }
         let data = FinderZipWriter.archive(entries: FinderOfficeTemplate.powerPoint)
         try data.write(to: url, options: .withoutOverwriting)
     }
@@ -871,15 +869,6 @@ private final class FinderContextMenuActionExecutor {
     </html>
     """
 
-    private static var powerPointTemplateURL: URL? {
-        let candidates = [
-            Bundle.main.resourceURL?
-                .appendingPathComponent("Templates", isDirectory: true)
-                .appendingPathComponent("BlankPowerPoint.pptx"),
-            URL(fileURLWithPath: "/Users/fusheng/Desktop/演示文稿1.pptx")
-        ]
-        return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
-    }
 }
 
 private struct FinderExternalApp {

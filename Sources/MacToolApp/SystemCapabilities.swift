@@ -2,14 +2,31 @@ import AppKit
 import CoreServices
 import Foundation
 import UniformTypeIdentifiers
+import UserNotifications
 
 enum MacAssistantNotifier {
     static func notify(title: String, message: String) {
-        let notification = NSUserNotification()
-        notification.title = title
-        notification.informativeText = message
-        notification.soundName = nil
-        NSUserNotificationCenter.default.deliver(notification)
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            if settings.authorizationStatus == .notDetermined {
+                center.requestAuthorization(options: [.alert]) { granted, error in
+                    if let error { AppLogger.shared.error("通知权限请求失败：\(error.localizedDescription)") }
+                    if granted { deliver(center: center, title: title, message: message) }
+                }
+            } else if settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional {
+                deliver(center: center, title: title, message: message)
+            }
+        }
+    }
+
+    private static func deliver(center: UNUserNotificationCenter, title: String, message: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = message
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        center.add(request) { error in
+            if let error { AppLogger.shared.error("本地通知发送失败：\(error.localizedDescription)") }
+        }
     }
 }
 
