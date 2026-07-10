@@ -236,9 +236,9 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
     private let cleanLabel = NSTextField(labelWithString: "清理")
     private let expandButton = ArchiveToolbarButton()
     private let expandLabel = NSTextField(labelWithString: "全部展开")
-    private let filterPopup = NSPopUpButton()
-    private let sortPopup = NSPopUpButton()
-    private let searchField = NSSearchField()
+    private let filterPopup = MacSelectControl()
+    private let sortPopup = MacSelectControl()
+    private let searchField = MacSearchField()
     private let previewImageView = NSImageView()
     private let previewTextView = NSTextView()
     private let previewTextScrollView = NSScrollView()
@@ -402,22 +402,18 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
         filterLabel.textColor = MacAssistantUI.Color.mutedText
         filterLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        filterPopup.addItems(withTitles: ["全部", "文件", "文件夹"])
+        filterPopup.items = ["全部", "文件", "文件夹"]
         filterPopup.target = self
         filterPopup.action = #selector(filterChanged)
-        filterPopup.controlSize = .small
         filterPopup.translatesAutoresizingMaskIntoConstraints = false
 
-        sortPopup.addItems(withTitles: ["按名称", "按大小", "按修改日期", "按类型"])
+        sortPopup.items = ["按名称", "按大小", "按修改日期", "按类型"]
         sortPopup.target = self
         sortPopup.action = #selector(sortChanged)
-        sortPopup.controlSize = .small
         sortPopup.translatesAutoresizingMaskIntoConstraints = false
 
-        searchField.placeholderString = "搜索文件"
-        searchField.target = self
-        searchField.action = #selector(searchChanged)
-        searchField.controlSize = .small
+        searchField.placeholder = "搜索文件"
+        searchField.onChange = { [weak self] _ in self?.searchChanged() }
         searchField.translatesAutoresizingMaskIntoConstraints = false
         searchField.widthAnchor.constraint(equalToConstant: 180).isActive = true
 
@@ -1468,12 +1464,12 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
     }
 
     @objc private func filterChanged() {
-        filterMode = FilterMode(rawValue: filterPopup.indexOfSelectedItem) ?? .all
+        filterMode = FilterMode(rawValue: filterPopup.selectedIndex) ?? .all
         applyFilter()
     }
 
     @objc private func sortChanged() {
-        sortMode = SortMode(rawValue: sortPopup.indexOfSelectedItem) ?? .name
+        sortMode = SortMode(rawValue: sortPopup.selectedIndex) ?? .name
         guard !isLoadingEntries else { return }
         rootNodes = buildTree(from: entries)
         refreshSidebar()
@@ -1481,7 +1477,7 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
     }
 
     @objc private func searchChanged() {
-        searchQuery = searchField.stringValue
+        searchQuery = searchField.text
         applyFilter()
     }
 

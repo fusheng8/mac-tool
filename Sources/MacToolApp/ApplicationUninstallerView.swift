@@ -61,6 +61,10 @@ final class ApplicationUninstallerView: NSView {
     private let summaryLabel = NSTextField(labelWithString: "")
     private let listStack = NSStackView()
     private let emptyLabel = NSTextField(labelWithString: "")
+    private let loadingPlaceholder = MacLoadingPlaceholderView(
+        title: "正在扫描应用",
+        detail: "正在读取应用目录、Homebrew 信息和卸载保护规则。"
+    )
     private let cancellationLock = NSLock()
     private var cancellationRequested = false
     private var adminKeepAliveTimer: DispatchSourceTimer?
@@ -234,8 +238,10 @@ final class ApplicationUninstallerView: NSView {
         document.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(listStack)
         document.addSubview(emptyLabel)
+        document.addSubview(loadingPlaceholder)
         scrollView.documentView = document
         container.addSubview(scrollView)
+        loadingPlaceholder.isHidden = true
 
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
@@ -261,7 +267,12 @@ final class ApplicationUninstallerView: NSView {
 
             emptyLabel.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
             emptyLabel.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
-            emptyLabel.centerYAnchor.constraint(equalTo: document.centerYAnchor)
+            emptyLabel.centerYAnchor.constraint(equalTo: document.centerYAnchor),
+
+            loadingPlaceholder.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            loadingPlaceholder.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            loadingPlaceholder.centerYAnchor.constraint(equalTo: document.centerYAnchor),
+            loadingPlaceholder.heightAnchor.constraint(equalToConstant: 190)
         ])
         return container
     }
@@ -345,6 +356,8 @@ final class ApplicationUninstallerView: NSView {
             selectedApplicationIDs.removeAll()
             plansByApplicationID.removeAll()
             rebuildList()
+        } else {
+            updateListLoadingState()
         }
 
         workQueue.async { [weak self] in
@@ -388,8 +401,9 @@ final class ApplicationUninstallerView: NSView {
         }
         rowViewsByID.removeAll()
 
-        emptyLabel.isHidden = !filteredApplications.isEmpty
-        if filteredApplications.isEmpty {
+        updateListLoadingState()
+        emptyLabel.isHidden = isLoading || !filteredApplications.isEmpty
+        if filteredApplications.isEmpty, !isLoading {
             emptyLabel.stringValue = applications.isEmpty ? "未扫描到应用。" : "没有符合当前筛选的应用。"
         }
 
@@ -405,6 +419,17 @@ final class ApplicationUninstallerView: NSView {
         }
         statusLabel.stringValue = statusText()
         updateActions()
+    }
+
+    private func updateListLoadingState() {
+        if isLoading {
+            emptyLabel.isHidden = true
+            loadingPlaceholder.isHidden = false
+            loadingPlaceholder.startAnimating()
+        } else {
+            loadingPlaceholder.stopAnimating()
+            loadingPlaceholder.isHidden = true
+        }
     }
 
     private func statusText() -> String {

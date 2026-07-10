@@ -1,8 +1,8 @@
-# 剪切板预览增强开发文档
+# 剪贴板预览增强开发文档
 
 ## 目标
 
-剪切板历史预览需要在当前实现上增强“识别准确、预览可读、降级明确”的能力。现有链路已经完成基础能力：
+剪贴板历史预览需要在当前实现上增强“识别准确、预览可读、降级明确”的能力。现有链路已经完成基础能力：
 
 - `ClipboardHistoryController` 从 `NSPasteboard` 采集第一条 `pasteboardItem`，保存 `plainText`、`storedTypes` 和 `ClipboardContentMetadata`。
 - `ClipboardHistoryStore` 将小内容内联存储，大内容写入 blob，并为图片生成缩略图。
@@ -69,7 +69,7 @@ private enum ClipboardPreviewRoute {
 
 ## UI 规范
 
-剪切板预览属于 macOS 工具型浮层，视觉应延续现有 `MacAssistantUI`：
+剪贴板预览属于 macOS 工具型浮层，视觉应延续现有 `MacAssistantUI`：
 
 - 主容器继续使用 `LayerBackedView(backgroundColor: MacAssistantUI.Color.window, cornerRadius: 14)`，头部高度保持紧凑。
 - 颜色、边框、圆角、字号优先复用 `MacAssistantUI.Color`、`MacAssistantUI.separator()` 和现有 chip 样式。
@@ -100,7 +100,7 @@ private enum ClipboardPreviewRoute {
 
 - 单个 stored type 数据上限当前为 `2_000_000` 字节，超过会被跳过。增强预览不能假设所有原始类型都存在。
 - `plainText` 来自 `.string`，可能为空；文件、图片、RTF 仍可能只有二进制 stored type。
-- `contentByteCount` 是已保存 stored type 的总和，可作为预览规模信息，不代表原始剪切板完整大小。
+- `contentByteCount` 是已保存 stored type 的总和，可作为预览规模信息，不代表原始剪贴板完整大小。
 
 ### 文件/路径
 
@@ -141,7 +141,7 @@ private enum ClipboardPreviewRoute {
 - 单 URL：trim 后完整匹配一个 http/https URL。
 - 多 URL：每行一个 http/https URL，空行可忽略。
 - 不把普通文本中的局部 URL 强行提升为 URL 卡片，避免长段落误判。
-- 识别阶段不访问网络，保证剪切板打开速度和隐私边界。
+- 识别阶段不访问网络，保证剪贴板打开速度和隐私边界。
 
 ### 代码
 
@@ -200,5 +200,5 @@ private enum ClipboardPreviewRoute {
 - 复制图片后历史列表缩略图仍生成，删除记录后 blob 和缩略图仍清理。
 - 复制同一内容仍按 content hash 去重，并保留收藏状态。
 - 搜索仍覆盖 `previewText`、`plainText`、文件路径和来源应用。
-- 空格打开/关闭预览、方向键切换选中项、复制回剪切板行为不回退。
+- 空格打开/关闭预览、方向键切换选中项、复制回剪贴板行为不回退。
 - 已存在的 HTML/RTF/图片/文件历史记录在迁移后仍可预览或降级展示。

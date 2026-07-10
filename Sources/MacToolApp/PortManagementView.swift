@@ -984,8 +984,8 @@ private final class PortDetailWindowController: NSWindowController, NSWindowDele
     private var response: PortDetailResponse = .close
     private var refreshTimer: Timer?
     private var resourceLabels: [ResourceField: NSTextField] = [:]
-    private var stopButton: NSButton?
-    private var stopMethodPopup: NSPopUpButton?
+    private var stopButton: MacTextButton?
+    private var stopMethodPopup: MacSelectControl?
     private var isProcessAlive = true
     private var isResourceSnapshotLoading = false
 
@@ -1199,9 +1199,9 @@ private final class PortDetailWindowController: NSWindowController, NSWindowDele
         row.widthAnchor.constraint(equalToConstant: 512).isActive = true
         row.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
-        let closeButton = NSButton(title: "关闭", target: self, action: #selector(closePressed))
-        closeButton.bezelStyle = .rounded
-        closeButton.keyEquivalent = "\r"
+        let closeButton = MacTextButton(title: "关闭", role: .primary)
+        closeButton.target = self
+        closeButton.action = #selector(closePressed)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(closeButton)
 
@@ -1212,30 +1212,30 @@ private final class PortDetailWindowController: NSWindowController, NSWindowDele
         ]
 
         if usage.pid != getpid() {
-            let revealButton = NSButton(title: "打开位置", target: self, action: #selector(revealProcessLocation))
-            revealButton.bezelStyle = .rounded
+            let revealButton = MacTextButton(title: "打开位置")
+            revealButton.target = self
+            revealButton.action = #selector(revealProcessLocation)
             revealButton.translatesAutoresizingMaskIntoConstraints = false
             revealButton.isEnabled = manager.locationURL(for: usage) != nil
             row.addSubview(revealButton)
 
-            let copyKillButton = NSButton(title: "复制命令", target: self, action: #selector(copyKillCommand))
-            copyKillButton.bezelStyle = .rounded
+            let copyKillButton = MacTextButton(title: "复制命令")
+            copyKillButton.target = self
+            copyKillButton.action = #selector(copyKillCommand)
             copyKillButton.translatesAutoresizingMaskIntoConstraints = false
             row.addSubview(copyKillButton)
 
-            let stopMethodPopup = NSPopUpButton()
-            stopMethodPopup.addItems(withTitles: PortStopMethod.allCases.map(\.displayName))
-            stopMethodPopup.selectItem(at: PortStopMethod.allCases.firstIndex(of: .terminate) ?? 1)
-            stopMethodPopup.controlSize = .small
-            stopMethodPopup.font = .systemFont(ofSize: 12, weight: .medium)
+            let stopMethodPopup = MacSelectControl()
+            stopMethodPopup.items = PortStopMethod.allCases.map(\.displayName)
+            stopMethodPopup.selectedIndex = PortStopMethod.allCases.firstIndex(of: .terminate) ?? 1
             stopMethodPopup.toolTip = "正常退出风险最低，TERM 可清理，KILL 立即强制结束。"
             stopMethodPopup.translatesAutoresizingMaskIntoConstraints = false
             self.stopMethodPopup = stopMethodPopup
             row.addSubview(stopMethodPopup)
 
-            let stopButton = NSButton(title: "停止运行", target: self, action: #selector(stopPressed))
-            stopButton.bezelStyle = .rounded
-            stopButton.contentTintColor = .systemRed
+            let stopButton = MacTextButton(title: "停止运行", role: .destructive)
+            stopButton.target = self
+            stopButton.action = #selector(stopPressed)
             stopButton.translatesAutoresizingMaskIntoConstraints = false
             self.stopButton = stopButton
             row.addSubview(stopButton)
@@ -1330,7 +1330,7 @@ private final class PortDetailWindowController: NSWindowController, NSWindowDele
 
     @objc private func stopPressed() {
         guard isProcessAlive else { return }
-        let index = stopMethodPopup?.indexOfSelectedItem ?? PortStopMethod.allCases.firstIndex(of: .terminate) ?? 1
+        let index = stopMethodPopup?.selectedIndex ?? PortStopMethod.allCases.firstIndex(of: .terminate) ?? 1
         let method = PortStopMethod.allCases.indices.contains(index) ? PortStopMethod.allCases[index] : .terminate
         response = .stop(method)
         closeModal()
@@ -1344,7 +1344,7 @@ private final class PortDetailWindowController: NSWindowController, NSWindowDele
     }
 
     @objc private func copyKillCommand() {
-        let index = stopMethodPopup?.indexOfSelectedItem ?? PortStopMethod.allCases.firstIndex(of: .terminate) ?? 1
+        let index = stopMethodPopup?.selectedIndex ?? PortStopMethod.allCases.firstIndex(of: .terminate) ?? 1
         let method = PortStopMethod.allCases.indices.contains(index) ? PortStopMethod.allCases[index] : .terminate
         guard let command = manager.shellKillCommand(pid: usage.pid, method: method) else {
             showInlineAlert(title: "无法复制命令", message: "正常退出不是 shell kill 命令，请选择 TERM 或 KILL。")

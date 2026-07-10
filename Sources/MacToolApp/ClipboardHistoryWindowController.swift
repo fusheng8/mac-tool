@@ -48,6 +48,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private var selectedApplication = Filter.allApplications
     private var selectedItemID: UUID?
     private var displayedItems: [ClipboardHistoryItem] = []
+    private var searchResults: [ClipboardHistoryItem] = []
     private var rowViewsByID: [UUID: ClipboardHistoryRowView] = [:]
     private let listTopSpacer = NSView()
     private let listBottomSpacer = NSView()
@@ -97,6 +98,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             self?.removeKeyboardEventTap()
             self?.unregisterPanelHotKeys()
             self?.removePanelHotKeyHandler()
+            self?.controller.panelDidClose()
         }
         buildUI()
     }
@@ -205,9 +207,9 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         header.translatesAutoresizingMaskIntoConstraints = false
         header.heightAnchor.constraint(equalToConstant: 52).isActive = true
 
-        searchField.placeholder = "搜索剪切板..."
-        searchField.onChange = { [weak self] _ in
-            self?.scheduleListRebuild()
+        searchField.placeholder = "搜索剪贴板..."
+        searchField.onChange = { [weak self] text in
+            self?.performDebouncedSearch(text)
         }
         searchField.onKeyCommand = { [weak self] event in
             self?.handleKeyDown(event) ?? false
@@ -696,15 +698,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         if search.isEmpty {
             source = controller.history
         } else {
-            let applicationKey = selectedApplication == Filter.allApplications || selectedApplication == Filter.favorites
-                ? nil
-                : selectedApplication
-            source = controller.searchHistory(
-                search,
-                applicationKey: applicationKey,
-                favoritesOnly: selectedApplication == Filter.favorites,
-                limit: controller.configuration.maxHistoryCount
-            )
+            source = searchResults
         }
         return source.filter { item in
             if selectedApplication == Filter.favorites && !item.isFavorite {
@@ -714,6 +708,28 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
                 return false
             }
             return true
+        }
+    }
+
+    private func performDebouncedSearch(_ text: String) {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            searchResults = []
+            scheduleListRebuild()
+            return
+        }
+        let applicationKey = selectedApplication == Filter.allApplications || selectedApplication == Filter.favorites
+            ? nil
+            : selectedApplication
+        controller.searchHistoryAsync(
+            query,
+            applicationKey: applicationKey,
+            favoritesOnly: selectedApplication == Filter.favorites,
+            limit: controller.configuration.maxHistoryCount
+        ) { [weak self] results in
+            guard let self, self.searchField.text.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            self.searchResults = results
+            self.scheduleListRebuild()
         }
     }
 
@@ -869,7 +885,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     @objc private func clearAllItems() {
         let alert = NSAlert()
-        alert.messageText = "清空全部剪切板历史？"
+        alert.messageText = "清空全部剪贴板历史？"
         alert.informativeText = "这会删除收藏和未收藏记录。"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "清空")
@@ -967,7 +983,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             &panelHotKeyHandlerRef
         )
         if status != noErr {
-            AppLogger.shared.error("剪切板面板快捷键监听失败：\(status)")
+            AppLogger.shared.error("剪贴板面板快捷键监听失败：\(status)")
         }
     }
 
@@ -993,7 +1009,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             panelHotKeyRefs.append(hotKeyRef)
             panelHotKeyActions[id] = action
         } else {
-            AppLogger.shared.error("剪切板面板快捷键注册失败：keyCode=\(keyCode), modifiers=\(modifiers), status=\(status)")
+            AppLogger.shared.error("剪贴板面板快捷键注册失败：keyCode=\(keyCode), modifiers=\(modifiers), status=\(status)")
         }
     }
 
@@ -1045,7 +1061,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             },
             userInfo: selfPointer
         ) else {
-            AppLogger.shared.error("剪切板快捷键事件拦截失败，请确认辅助功能权限已授权。")
+            AppLogger.shared.error("剪贴板快捷键事件拦截失败，请确认辅助功能权限已授权。")
             return
         }
 
@@ -1447,11 +1463,11 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func showQuickLookPreview() -> Bool {
         guard let item = selectedItem() else {
-            AppLogger.shared.error("剪切板快速预览失败：没有选中记录")
+            AppLogger.shared.error("剪贴板快速预览失败：没有选中记录")
             return false
         }
         guard let previewURL = makeQuickLookURL(for: item) else {
-            AppLogger.shared.error("剪切板快速预览失败：无法生成预览文件，item=\(item.id)")
+            AppLogger.shared.error("剪贴板快速预览失败：无法生成预览文件，item=\(item.id)")
             return false
         }
 
@@ -2064,7 +2080,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
                 quickLookCleanupURL = url
                 return url
             } catch {
-                AppLogger.shared.error("剪切板预览图片写入失败：\(error.localizedDescription)")
+                AppLogger.shared.error("剪贴板预览图片写入失败：\(error.localizedDescription)")
                 return nil
             }
         }
@@ -2081,7 +2097,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             quickLookCleanupURL = url
             return url
         } catch {
-            AppLogger.shared.error("剪切板预览文本写入失败：\(error.localizedDescription)")
+            AppLogger.shared.error("剪贴板预览文本写入失败：\(error.localizedDescription)")
             return nil
         }
     }
@@ -2093,7 +2109,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             return directory
         } catch {
-            AppLogger.shared.error("剪切板预览目录创建失败：\(error.localizedDescription)")
+            AppLogger.shared.error("剪贴板预览目录创建失败：\(error.localizedDescription)")
             return nil
         }
     }
@@ -2121,7 +2137,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         if let fileName = item.metadata.fileNames.first, !fileName.isEmpty {
             return fileName
         }
-        return ClipboardHistoryRowView.singleLineText(item.previewText, fallback: "剪切板预览")
+        return ClipboardHistoryRowView.singleLineText(item.previewText, fallback: "剪贴板预览")
     }
 
     private func cleanupQuickLookFile() {
