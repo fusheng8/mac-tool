@@ -124,6 +124,7 @@ jobs:
           codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | grep -F "Authority=$CODESIGN_IDENTITY"
           codesign -d --verbose=4 "$app" 2>&1 | grep -E 'flags=.*runtime'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "$APP_BUILD_VERSION"
           test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
           if grep -aR -n -E '/Users/[^/]+/' "$app"; then
             echo "Packaged app contains a user-specific absolute path" >&2
@@ -159,6 +160,7 @@ jobs:
           codesign -d --verbose=4 "$app" 2>&1 | grep -F 'TeamIdentifier=6N8KQ247WZ'
           codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | grep -F 'TeamIdentifier=6N8KQ247WZ'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "$APP_BUILD_VERSION"
           test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
           if grep -aR -n -E '/Users/[^/]+/' "$app"; then
             echo "Packaged app contains a user-specific absolute path" >&2
