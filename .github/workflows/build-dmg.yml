@@ -120,12 +120,12 @@ jobs:
           test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
           codesign --verify --deep --strict "$app"
           codesign --verify '.build/MacTool.dmg'
-          codesign -d --verbose=4 "$app" 2>&1 | rg -F "Authority=$CODESIGN_IDENTITY"
-          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | rg -F "Authority=$CODESIGN_IDENTITY"
-          codesign -d --verbose=4 "$app" 2>&1 | rg 'flags=.*runtime'
+          codesign -d --verbose=4 "$app" 2>&1 | grep -F "Authority=$CODESIGN_IDENTITY"
+          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | grep -F "Authority=$CODESIGN_IDENTITY"
+          codesign -d --verbose=4 "$app" 2>&1 | grep -E 'flags=.*runtime'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
           test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
-          if rg -a -n '/Users/[^/]+/' "$app"; then
+          if grep -aR -n -E '/Users/[^/]+/' "$app"; then
             echo "Packaged app contains a user-specific absolute path" >&2
             exit 1
           fi
@@ -155,12 +155,12 @@ jobs:
           test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
           test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
           codesign --verify --deep --strict "$app"
-          codesign -d --verbose=4 "$app" 2>&1 | rg 'flags=.*runtime'
-          codesign -d --verbose=4 "$app" 2>&1 | rg -F 'TeamIdentifier=6N8KQ247WZ'
-          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | rg -F 'TeamIdentifier=6N8KQ247WZ'
+          codesign -d --verbose=4 "$app" 2>&1 | grep -E 'flags=.*runtime'
+          codesign -d --verbose=4 "$app" 2>&1 | grep -F 'TeamIdentifier=6N8KQ247WZ'
+          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | grep -F 'TeamIdentifier=6N8KQ247WZ'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
           test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
-          if rg -a -n '/Users/[^/]+/' "$app"; then
+          if grep -aR -n -E '/Users/[^/]+/' "$app"; then
             echo "Packaged app contains a user-specific absolute path" >&2
             exit 1
           fi
@@ -226,7 +226,7 @@ jobs:
             "$appcast_dir"
 
           test -f "$appcast_dir/appcast.xml"
-          rg -q 'sparkle:edSignature=' "$appcast_dir/appcast.xml"
+          grep -q 'sparkle:edSignature=' "$appcast_dir/appcast.xml"
           mkdir -p "$PWD/.build/pages"
           cp "$appcast_dir/appcast.xml" "$PWD/.build/pages/appcast.xml"
 
