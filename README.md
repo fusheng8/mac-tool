@@ -271,21 +271,18 @@ security find-identity -v -p codesigning
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
 ```
 
-GitHub Actions 也支持使用固定签名 keychain。把本机 keychain 转成 base64 后配置到仓库 Secrets：
+推荐让 Apple 代码签名私钥始终留在本机钥匙串：先在本机生成正式签名 DMG，再把它上传到对应版本的草稿 Release：
 
 ```bash
-base64 -i /path/to/release-signing.keychain | pbcopy
+CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" \
+  DMG_NAME=MacTool.dmg scripts/build_dmg.sh
+gh release create 0.2.0 .build/MacTool.dmg \
+  --title 0.2.0 --generate-notes --verify-tag --draft
 ```
 
-然后在 GitHub 仓库配置：
+版本标签触发后，GitHub Actions 会下载该预签名 DMG，重新验证磁盘镜像、arm64 架构、固定 Team Identifier、Hardened Runtime、Bundle/扩展签名、版本和路径，再使用仓库中已有的 `SPARKLE_PRIVATE_KEY` 生成 appcast。验证完成前 Release 保持草稿状态。
 
-```text
-MACOS_KEYCHAIN_BASE64      # 上面复制的 base64 内容
-MACOS_KEYCHAIN_PASSWORD    # keychain 密码
-MACOS_CODESIGN_IDENTITY    # 可选；不填时会自动取 keychain 中第一个 codesigning identity
-```
-
-如果未配置 `MACOS_KEYCHAIN_BASE64`，发布工作流会直接失败。
+如果既没有受控 Actions 签名 keychain，也没有对应标签的预签名草稿 DMG，发布工作流会直接失败，且不会回退到 ad-hoc。
 
 ## 开发
 

@@ -43,7 +43,32 @@ jobs:
           fi
           echo "APP_BUILD_VERSION=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
 
+      - name: Select signed DMG source
+        id: dmg_source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MACOS_KEYCHAIN_BASE64: ${{ secrets.MACOS_KEYCHAIN_BASE64 }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          if [[ -n "$MACOS_KEYCHAIN_BASE64" && -n "$MACOS_KEYCHAIN_PASSWORD" ]]; then
+            echo "mode=build" >> "$GITHUB_OUTPUT"
+            echo "A signing keychain is configured; building the DMG on the runner."
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]] && gh release view "$APP_VERSION" >/dev/null 2>&1; then
+            mkdir -p "$PWD/.build"
+            gh release download "$APP_VERSION" \
+              --pattern "MacTool.dmg" \
+              --dir "$PWD/.build" \
+              --clobber
+            test -f "$PWD/.build/MacTool.dmg"
+            echo "mode=prebuilt" >> "$GITHUB_OUTPUT"
+            echo "Using the locally signed DMG from the draft GitHub Release."
+          else
+            echo "Formal release requires either signing-keychain secrets or a pre-signed MacTool.dmg in the tag's draft Release." >&2
+            exit 1
+          fi
+
       - name: Install signing keychain
+        if: steps.dmg_source.outputs.mode == 'build'
         env:
           MACOS_KEYCHAIN_BASE64: ${{ secrets.MACOS_KEYCHAIN_BASE64 }}
           MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
@@ -82,11 +107,13 @@ jobs:
           echo "Using code signing identity: $MACOS_CODESIGN_IDENTITY"
 
       - name: Build DMG
+        if: steps.dmg_source.outputs.mode == 'build'
         env:
           DMG_NAME: "MacTool.dmg"
         run: scripts/build_dmg.sh
 
       - name: Verify release artifact
+        if: steps.dmg_source.outputs.mode == 'build'
         run: |
           app='.build/Mac助手.app'
           test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
@@ -96,6 +123,41 @@ jobs:
           codesign -d --verbose=4 "$app" 2>&1 | rg -F "Authority=$CODESIGN_IDENTITY"
           codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | rg -F "Authority=$CODESIGN_IDENTITY"
           codesign -d --verbose=4 "$app" 2>&1 | rg 'flags=.*runtime'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
+          test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
+          if rg -a -n '/Users/[^/]+/' "$app"; then
+            echo "Packaged app contains a user-specific absolute path" >&2
+            exit 1
+          fi
+
+      - name: Resolve Sparkle tools for prebuilt DMG
+        if: steps.dmg_source.outputs.mode == 'prebuilt'
+        run: swift package resolve
+
+      - name: Verify prebuilt signed release artifact
+        if: steps.dmg_source.outputs.mode == 'prebuilt'
+        run: |
+          dmg="$PWD/.build/MacTool.dmg"
+          mount_dir="$RUNNER_TEMP/mac-tool-dmg"
+          mkdir -p "$mount_dir"
+          hdiutil verify "$dmg"
+          codesign --verify --strict "$dmg"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_dir"
+          cleanup() {
+            hdiutil detach "$mount_dir" >/dev/null
+          }
+          trap cleanup EXIT
+
+          app="$mount_dir/Mac助手.app"
+          test -d "$app"
+          test -L "$mount_dir/Applications"
+          test "$(readlink "$mount_dir/Applications")" = "/Applications"
+          test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
+          test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
+          codesign --verify --deep --strict "$app"
+          codesign -d --verbose=4 "$app" 2>&1 | rg 'flags=.*runtime'
+          codesign -d --verbose=4 "$app" 2>&1 | rg -F 'TeamIdentifier=6N8KQ247WZ'
+          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | rg -F 'TeamIdentifier=6N8KQ247WZ'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
           test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
           if rg -a -n '/Users/[^/]+/' "$app"; then
