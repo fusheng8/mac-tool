@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -179,7 +179,7 @@ jobs:
           echo "Found DMG: $dmg_path"
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: MacAssistant-DMG
           path: ${{ steps.dmg.outputs.path }}
@@ -234,7 +234,7 @@ jobs:
 
       - name: Upload GitHub Pages artifact
         if: github.ref_type == 'tag'
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: sparkle-appcast-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/pages
@@ -242,6 +242,6 @@ jobs:
       - name: Deploy Sparkle appcast to GitHub Pages
         id: deployment
         if: github.ref_type == 'tag'
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
         with:
           artifact_name: sparkle-appcast-${{ github.run_id }}-${{ github.run_attempt }}
