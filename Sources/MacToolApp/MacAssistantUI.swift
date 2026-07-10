@@ -2,19 +2,63 @@ import AppKit
 
 enum MacAssistantUI {
     enum Color {
-        static let window = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.99, alpha: 0.94)
-        static let sidebar = NSColor(calibratedRed: 0.91, green: 0.93, blue: 0.97, alpha: 0.70)
-        static let sidebarSelected = NSColor(calibratedRed: 0.80, green: 0.86, blue: 0.98, alpha: 0.78)
-        static let card = NSColor.white.withAlphaComponent(0.82)
-        static let cardHover = NSColor(calibratedRed: 0.94, green: 0.96, blue: 0.99, alpha: 0.88)
-        static let separator = NSColor(calibratedRed: 0.75, green: 0.79, blue: 0.86, alpha: 0.38)
-        static let hairline = NSColor(calibratedRed: 0.84, green: 0.87, blue: 0.92, alpha: 0.55)
+        static var window: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.99, alpha: 0.96),
+                dark: NSColor(calibratedRed: 0.105, green: 0.115, blue: 0.14, alpha: 0.98)
+            )
+        }
+
+        static var sidebar: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.91, green: 0.93, blue: 0.97, alpha: 0.78),
+                dark: NSColor(calibratedRed: 0.14, green: 0.155, blue: 0.19, alpha: 0.88)
+            )
+        }
+
+        static var sidebarSelected: NSColor {
+            let alpha: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.95 : 0.78
+            return dynamic(
+                light: NSColor(calibratedRed: 0.80, green: 0.86, blue: 0.98, alpha: alpha),
+                dark: NSColor(calibratedRed: 0.19, green: 0.29, blue: 0.46, alpha: alpha)
+            )
+        }
+
+        static var card: NSColor {
+            dynamic(
+                light: NSColor.white.withAlphaComponent(0.86),
+                dark: NSColor(calibratedRed: 0.16, green: 0.17, blue: 0.20, alpha: 0.92)
+            )
+        }
+
+        static var cardHover: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.94, green: 0.96, blue: 0.99, alpha: 0.92),
+                dark: NSColor(calibratedRed: 0.20, green: 0.22, blue: 0.27, alpha: 0.96)
+            )
+        }
+
+        static var separator: NSColor {
+            let alpha: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.72 : 0.42
+            return NSColor.separatorColor.withAlphaComponent(alpha)
+        }
+
+        static var hairline: NSColor {
+            let alpha: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.88 : 0.58
+            return NSColor.separatorColor.withAlphaComponent(alpha)
+        }
         static let mutedText = NSColor.secondaryLabelColor
         static let subtleText = NSColor.tertiaryLabelColor
         static let blue = NSColor.systemBlue
         static let amber = NSColor.systemOrange
         static let purple = NSColor.systemPurple
         static let green = NSColor.systemGreen
+
+        private static func dynamic(light: NSColor, dark: NSColor) -> NSColor {
+            NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            }
+        }
     }
 
     static func symbol(_ name: String, pointSize: CGFloat = 15, weight: NSFont.Weight = .medium) -> NSImage? {
@@ -51,24 +95,41 @@ enum MacAssistantUI {
 }
 
 final class LayerBackedView: NSView {
+    private let storedBackgroundColor: NSColor
+    private let storedBorderColor: NSColor?
+
     init(
         backgroundColor: NSColor = .clear,
         cornerRadius: CGFloat = 0,
         borderColor: NSColor? = nil,
         borderWidth: CGFloat = 0
     ) {
+        storedBackgroundColor = backgroundColor
+        storedBorderColor = borderColor
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = backgroundColor.cgColor
         layer?.cornerRadius = cornerRadius
         layer?.cornerCurve = .continuous
-        layer?.borderColor = borderColor?.cgColor
         layer?.borderWidth = borderWidth
+        updateResolvedColors()
         translatesAutoresizingMaskIntoConstraints = false
     }
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateResolvedColors()
+        needsDisplay = true
+    }
+
+    private func updateResolvedColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = storedBackgroundColor.cgColor
+            layer?.borderColor = storedBorderColor?.cgColor
+        }
     }
 }
 
@@ -540,6 +601,14 @@ final class MacSearchField: NSControl, NSTextInputClient {
 
     override func keyDown(with event: NSEvent) {
         guard isEnabled else { return }
+        if event.keyCode == 48 {
+            if event.modifierFlags.contains(.shift) {
+                window?.selectPreviousKeyView(self)
+            } else {
+                window?.selectNextKeyView(self)
+            }
+            return
+        }
         if hasMarkedText(), inputContext?.handleEvent(event) == true {
             return
         }

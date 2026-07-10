@@ -121,6 +121,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let contentStack = NSStackView()
     private let pageTitleLabel = NSTextField(labelWithString: "")
     private let sidebarSearchField = MacSearchField()
+    private let sidebarNoResultsLabel = MacAssistantUI.caption("未找到相关功能", size: 12)
     private let refreshDisplaysButton = MacIconButton(symbolName: "arrow.clockwise")
     private let systemOverviewSidebarButton = SidebarNavItem(title: "系统概览", symbolName: "desktopcomputer")
     private let settingsSidebarButton = SidebarNavItem(title: "设置", symbolName: "gearshape")
@@ -391,6 +392,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         sidebarSearchField.onChange = { [weak self] _ in
             self?.updateSidebarSearchResults()
         }
+        sidebarSearchField.onKeyCommand = { [weak self] event in
+            self?.handleSidebarSearchKeyCommand(event) ?? false
+        }
+        sidebarNoResultsLabel.alignment = .center
+        sidebarNoResultsLabel.isHidden = true
+        sidebarNoResultsLabel.setAccessibilityLabel("未找到相关功能")
 
         configureSidebarButton(systemOverviewSidebarButton, page: .systemOverview)
         configureSidebarButton(settingsSidebarButton, page: .settings)
@@ -401,7 +408,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         configureSidebarButton(portManagementSidebarButton, page: .portManagement)
         configureSidebarButton(appUninstallSidebarButton, page: .appUninstall)
 
-        let stack = NSStackView(views: [sidebarSearchField, systemOverviewSidebarButton, displaySidebarButton, clipboardSidebarButton, archiveSidebarButton, contextMenuSidebarButton, portManagementSidebarButton, appUninstallSidebarButton, settingsSidebarButton])
+        let stack = NSStackView(views: [sidebarSearchField, systemOverviewSidebarButton, displaySidebarButton, clipboardSidebarButton, archiveSidebarButton, contextMenuSidebarButton, portManagementSidebarButton, appUninstallSidebarButton, settingsSidebarButton, sidebarNoResultsLabel])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.distribution = .fill
@@ -639,11 +646,43 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             item.isHidden = !matched
             return (item, page, matched)
         }
+        let hasMatches = matches.contains { $0.2 }
+        sidebarNoResultsLabel.isHidden = hasMatches
 
         if !matches.contains(where: { $0.1 == selectedSettingsPage && $0.2 }),
            let firstMatch = matches.first(where: { $0.2 }) {
             selectedSettingsPage = firstMatch.1
             reloadCurrentPage()
+        }
+    }
+
+    private func handleSidebarSearchKeyCommand(_ event: NSEvent) -> Bool {
+        let visibleItems: [(SidebarNavItem, SettingsPage)] = [
+            (systemOverviewSidebarButton, .systemOverview),
+            (displaySidebarButton, .displays),
+            (clipboardSidebarButton, .clipboard),
+            (archiveSidebarButton, .archive),
+            (contextMenuSidebarButton, .contextMenu),
+            (portManagementSidebarButton, .portManagement),
+            (appUninstallSidebarButton, .appUninstall),
+            (settingsSidebarButton, .settings)
+        ].filter { !$0.0.isHidden }
+        guard !visibleItems.isEmpty else { return event.keyCode == 125 || event.keyCode == 126 || event.keyCode == 36 || event.keyCode == 76 }
+
+        switch event.keyCode {
+        case 125, 126:
+            let current = visibleItems.firstIndex { $0.1 == selectedSettingsPage } ?? 0
+            let delta = event.keyCode == 125 ? 1 : -1
+            let next = (current + delta + visibleItems.count) % visibleItems.count
+            selectedSettingsPage = visibleItems[next].1
+            reloadCurrentPage()
+            return true
+        case 36, 76:
+            reloadCurrentPage()
+            window?.makeFirstResponder(visibleItems.first { $0.1 == selectedSettingsPage }?.0)
+            return true
+        default:
+            return false
         }
     }
 
