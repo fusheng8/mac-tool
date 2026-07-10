@@ -2,27 +2,27 @@ name: Build DMG
 
 on:
   push:
-    branches:
-      - main
-      - master
     tags:
       - "[0-9]*.[0-9]*.[0-9]*"
-  pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 jobs:
   build-dmg:
     name: Build macOS DMG
     runs-on: macos-15
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
 
       - name: Show toolchain
         run: |
@@ -31,13 +31,17 @@ jobs:
 
       - name: Resolve app version
         run: |
+          expected_version="$(tr -d '[:space:]' < VERSION)"
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "$expected_version" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match VERSION $expected_version" >&2
+              exit 1
+            fi
             echo "APP_VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
-            echo "APP_BUILD_VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
           else
-            echo "APP_VERSION=0.1.0" >> "$GITHUB_ENV"
-            echo "APP_BUILD_VERSION=0.1.0" >> "$GITHUB_ENV"
+            echo "APP_VERSION=$expected_version" >> "$GITHUB_ENV"
           fi
+          echo "APP_BUILD_VERSION=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
 
       - name: Install signing keychain
         env:
@@ -46,9 +50,8 @@ jobs:
           MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
         run: |
           if [[ -z "$MACOS_KEYCHAIN_BASE64" ]]; then
-            echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
-            echo "No signing keychain configured; using ad-hoc signing."
-            exit 0
+            echo "Missing MACOS_KEYCHAIN_BASE64; formal DMG builds never fall back to ad-hoc signing." >&2
+            exit 1
           fi
 
           if [[ -z "$MACOS_KEYCHAIN_PASSWORD" ]]; then
@@ -67,7 +70,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$keychain_path"
 
           if [[ -z "$MACOS_CODESIGN_IDENTITY" ]]; then
-            MACOS_CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain_path" | awk -F '"' '/"/ { print $2; exit }')"
+            MACOS_CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain_path" | awk -F '"' '/"Apple Development:/ { print $2; exit }')"
           fi
 
           if [[ -z "$MACOS_CODESIGN_IDENTITY" ]]; then
@@ -80,9 +83,25 @@ jobs:
 
       - name: Build DMG
         env:
-          PACKAGE_ONLY: "1"
           DMG_NAME: "MacTool.dmg"
         run: scripts/build_dmg.sh
+
+      - name: Verify release artifact
+        run: |
+          app='.build/Mac助手.app'
+          test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
+          test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
+          codesign --verify --deep --strict "$app"
+          codesign --verify '.build/MacTool.dmg'
+          codesign -d --verbose=4 "$app" 2>&1 | rg -F "Authority=$CODESIGN_IDENTITY"
+          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | rg -F "Authority=$CODESIGN_IDENTITY"
+          codesign -d --verbose=4 "$app" 2>&1 | rg 'flags=.*runtime'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
+          test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
+          if rg -a -n '/Users/[^/]+/' "$app"; then
+            echo "Packaged app contains a user-specific absolute path" >&2
+            exit 1
+          fi
 
       - name: Locate DMG
         id: dmg
@@ -96,7 +115,7 @@ jobs:
           echo "Found DMG: $dmg_path"
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: MacAssistant-DMG
           path: ${{ steps.dmg.outputs.path }}
@@ -145,12 +164,13 @@ jobs:
             "$appcast_dir"
 
           test -f "$appcast_dir/appcast.xml"
+          rg -q 'sparkle:edSignature=' "$appcast_dir/appcast.xml"
           mkdir -p "$PWD/.build/pages"
           cp "$appcast_dir/appcast.xml" "$PWD/.build/pages/appcast.xml"
 
       - name: Upload GitHub Pages artifact
         if: github.ref_type == 'tag'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
           name: sparkle-appcast-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/pages
@@ -158,6 +178,6 @@ jobs:
       - name: Deploy Sparkle appcast to GitHub Pages
         id: deployment
         if: github.ref_type == 'tag'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
         with:
           artifact_name: sparkle-appcast-${{ github.run_id }}-${{ github.run_attempt }}

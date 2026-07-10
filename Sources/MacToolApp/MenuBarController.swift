@@ -48,9 +48,9 @@ final class MenuBarController {
         let menu = NSMenu()
 
         menu.addItem(actionItem("打开剪贴板历史", #selector(openClipboardHistory), nil))
-        menu.addItem(settingsPageItem("系统概括", .systemOverview))
+        menu.addItem(settingsPageItem("系统概览", .systemOverview))
         menu.addItem(settingsPageItem("显示器", .displays))
-        menu.addItem(settingsPageItem("剪切板", .clipboard))
+        menu.addItem(settingsPageItem("剪贴板", .clipboard))
         menu.addItem(settingsPageItem("压缩/解压", .archive))
         menu.addItem(settingsPageItem("右键菜单", .contextMenu))
         menu.addItem(settingsPageItem("端口管理", .portManagement))
@@ -168,7 +168,8 @@ final class MenuBarController {
                 detector: detector,
                 disconnect: disconnect,
                 recovery: recovery,
-                statuses: statuses
+                statuses: statuses,
+                clipboardController: clipboard
             ) { [weak self] in
                 self?.onCheckForUpdates()
             } onSave: { [weak self] in

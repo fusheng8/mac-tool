@@ -31,7 +31,7 @@ final class GlobalHotKeyManager {
             &hotKeyRef
         )
         if status != noErr {
-            AppLogger.shared.error("剪切板快捷键注册失败：\(status)")
+            AppLogger.shared.error("剪贴板快捷键注册失败：\(status)")
         }
     }
 
@@ -76,7 +76,7 @@ final class GlobalHotKeyManager {
             &eventHandlerRef
         )
         if status != noErr {
-            AppLogger.shared.error("剪切板快捷键事件监听失败：\(status)")
+            AppLogger.shared.error("剪贴板快捷键事件监听失败：\(status)")
         }
     }
 }

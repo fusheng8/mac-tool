@@ -1,142 +1,272 @@
 import Foundation
+import MacToolCore
 
-final class ProfileStore {
+final class ProfileStore: @unchecked Sendable {
+    static let onboardingVersion = 1
+    static let privacyNoticeVersion = 1
+    static let displayConsentVersion = 1
+
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let lock = NSRecursiveLock()
+    private let configURL: URL
+    private let stateURL: URL
+    private let finderSyncConfigURL: URL?
 
-    private(set) var config: AppConfig
-    private(set) var state: AppState
+    private var storedConfig: AppConfig
+    private var storedState: AppState
 
-    init() {
+    let isExistingInstallation: Bool
+    private(set) var recoveryNotice: String?
+    private(set) var lastPersistenceError: Error?
+
+    init(
+        configURL: URL = AppPaths.configURL,
+        stateURL: URL = AppPaths.stateURL,
+        finderSyncConfigURL: URL? = AppPaths.finderSyncConfigURL
+    ) {
+        self.configURL = configURL
+        self.stateURL = stateURL
+        self.finderSyncConfigURL = finderSyncConfigURL
+        isExistingInstallation = FileManager.default.fileExists(atPath: configURL.path)
+
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
-        try? AppPaths.ensureDirectories()
-        config = Self.load(url: AppPaths.configURL, decoder: decoder) ?? .defaultValue
-        config.contextMenu = config.contextMenu.normalized()
-        if config.archive.enabledFormats.isEmpty {
-            config.archive = .defaultValue
+
+        do {
+            try Self.ensureParentDirectory(for: configURL)
+            try Self.ensureParentDirectory(for: stateURL)
+            if let finderSyncConfigURL {
+                try Self.ensureParentDirectory(for: finderSyncConfigURL)
+            }
+        } catch {
+            lastPersistenceError = error
         }
-        state = Self.load(url: AppPaths.stateURL, decoder: decoder) ?? .empty
-        try? saveConfig()
-        if !FileManager.default.fileExists(atPath: AppPaths.configURL.path) {
-            try? saveConfig()
+
+        let loadedConfig: AppConfig
+        do {
+            loadedConfig = try Self.load(AppConfig.self, from: configURL, decoder: decoder) ?? .defaultValue
+        } catch {
+            let backupURL = Self.backupCorruptFile(at: configURL)
+            recoveryNotice = backupURL.map { "配置文件损坏，已保存到 \($0.lastPathComponent)，并恢复为安全默认值。" }
+                ?? "配置文件损坏，已恢复为安全默认值；损坏副本保存失败。"
+            loadedConfig = .defaultValue
+            lastPersistenceError = error
         }
-        if !FileManager.default.fileExists(atPath: AppPaths.stateURL.path) {
-            try? saveState()
+
+        var normalizedConfig = loadedConfig
+        normalizedConfig.contextMenu = normalizedConfig.contextMenu.normalized()
+        if normalizedConfig.archive.enabledFormats.isEmpty {
+            normalizedConfig.archive = .defaultValue
+        }
+        let requiresConfigMigration = ConfigurationRecoveryPolicy.requiresMigration(
+            schemaVersion: normalizedConfig.schemaVersion,
+            currentVersion: AppConfig.currentSchemaVersion
+        )
+        normalizedConfig.schemaVersion = AppConfig.currentSchemaVersion
+        storedConfig = normalizedConfig
+
+        do {
+            storedState = try Self.load(AppState.self, from: stateURL, decoder: decoder) ?? .empty
+        } catch {
+            let backupURL = Self.backupCorruptFile(at: stateURL)
+            let stateNotice = backupURL.map { "运行状态损坏，已保存到 \($0.lastPathComponent)，并重置为安全状态。" }
+                ?? "运行状态损坏，已重置为安全状态。"
+            recoveryNotice = [recoveryNotice, stateNotice].compactMap { $0 }.joined(separator: "\n")
+            storedState = .empty
+            lastPersistenceError = error
+        }
+
+        // 0.2.0 升级必须重新确认显示器自动化；新 schema 已确认的用户不受影响。
+        if requiresConfigMigration {
+            storedState.displayAutomationConsentVersion = 0
+            storedState.displayAutomationApproved = false
+        }
+
+        do {
+            if !isExistingInstallation || requiresConfigMigration || recoveryNotice != nil {
+                try saveConfig()
+            }
+            if !FileManager.default.fileExists(atPath: stateURL.path) || requiresConfigMigration || recoveryNotice != nil {
+                try saveState()
+            }
+        } catch {
+            lastPersistenceError = error
         }
     }
 
+    var config: AppConfig { withLock { storedConfig } }
+    var state: AppState { withLock { storedState } }
+
     var profiles: [DisplayProfile] {
-        get { config.profiles }
-        set {
-            config.profiles = newValue
-            try? saveConfig()
-        }
+        get { withLock { storedConfig.profiles } }
+        set { persistBestEffort { $0.profiles = newValue } }
     }
 
     var clipboard: ClipboardConfig {
-        get { config.clipboard }
-        set {
-            config.clipboard = newValue
-            try? saveConfig()
-        }
+        get { withLock { storedConfig.clipboard } }
+        set { persistBestEffort { $0.clipboard = newValue } }
     }
 
     var archive: ArchiveConfig {
-        get { config.archive }
-        set {
-            config.archive = newValue
-            try? saveConfig()
-        }
+        get { withLock { storedConfig.archive } }
+        set { persistBestEffort { $0.archive = newValue } }
     }
 
     var contextMenu: ContextMenuConfig {
-        get { config.contextMenu.normalized() }
-        set {
-            config.contextMenu = newValue.normalized()
-            try? saveConfig()
+        get { withLock { storedConfig.contextMenu.normalized() } }
+        set { persistBestEffort { $0.contextMenu = newValue.normalized() } }
+    }
+
+    var pendingReconnects: [PendingReconnect] { withLock { storedState.pendingReconnects } }
+    var lastSeenDisplays: [DisplaySnapshot] { withLock { storedState.lastSeenDisplays } }
+    var backgroundTasksAllowed: Bool {
+        withLock {
+            storedState.onboardingVersion >= Self.onboardingVersion
+                && storedState.privacyNoticeVersion >= Self.privacyNoticeVersion
+        }
+    }
+    var displayAutomationAllowed: Bool {
+        withLock {
+            backgroundTasksAllowed
+                && storedState.displayAutomationConsentVersion >= Self.displayConsentVersion
+                && storedState.displayAutomationApproved
         }
     }
 
-    var pendingReconnects: [PendingReconnect] {
-        state.pendingReconnects
+    func updateConfig(_ mutation: (inout AppConfig) throws -> Void) throws {
+        try withLock {
+            var candidate = storedConfig
+            try mutation(&candidate)
+            candidate.schemaVersion = AppConfig.currentSchemaVersion
+            let data = try encoder.encode(candidate)
+            try Self.secureAtomicWrite(data, to: configURL)
+            if let finderSyncConfigURL {
+                try Self.secureAtomicWrite(data, to: finderSyncConfigURL)
+            }
+            storedConfig = candidate
+            lastPersistenceError = nil
+        }
     }
 
-    var lastSeenDisplays: [DisplaySnapshot] {
-        state.lastSeenDisplays
+    func updateState(_ mutation: (inout AppState) throws -> Void) throws {
+        try withLock {
+            var candidate = storedState
+            try mutation(&candidate)
+            let data = try encoder.encode(candidate)
+            try Self.secureAtomicWrite(data, to: stateURL)
+            storedState = candidate
+            lastPersistenceError = nil
+        }
+    }
+
+    func completeOnboarding(clipboardEnabled: Bool, displayAutomationApproved: Bool) throws {
+        try updateConfig { $0.clipboard.enabled = clipboardEnabled }
+        try updateState {
+            $0.onboardingVersion = Self.onboardingVersion
+            $0.privacyNoticeVersion = Self.privacyNoticeVersion
+            $0.displayAutomationConsentVersion = Self.displayConsentVersion
+            $0.displayAutomationApproved = displayAutomationApproved
+        }
+    }
+
+    @discardableResult
+    func markApplicationStarted() throws -> Bool {
+        let wasUnclean = withLock { !storedState.lastCleanShutdown }
+        try updateState { $0.lastCleanShutdown = false }
+        return wasUnclean
+    }
+
+    func markApplicationStoppedCleanly() throws {
+        try updateState { $0.lastCleanShutdown = true }
+    }
+
+    func rememberAppDisconnectedDisplay(_ displayID: UInt32) throws {
+        try updateState {
+            if !$0.appDisconnectedDisplayIDs.contains(displayID) {
+                $0.appDisconnectedDisplayIDs.append(displayID)
+            }
+        }
+    }
+
+    func forgetAppDisconnectedDisplay(_ displayID: UInt32) throws {
+        try updateState { $0.appDisconnectedDisplayIDs.removeAll { $0 == displayID } }
     }
 
     func updateProfile(_ profile: DisplayProfile) {
-        if let index = config.profiles.firstIndex(where: { $0.id == profile.id }) {
-            config.profiles[index] = profile
-        } else {
-            config.profiles.append(profile)
+        persistBestEffort {
+            if let index = $0.profiles.firstIndex(where: { $0.id == profile.id }) {
+                $0.profiles[index] = profile
+            } else {
+                $0.profiles.append(profile)
+            }
         }
-        try? saveConfig()
     }
 
     func deleteProfile(id: String) {
-        config.profiles.removeAll { $0.id == id }
-        state.pendingReconnects.removeAll { $0.profileId == id }
-        try? saveConfig()
-        try? saveState()
+        do {
+            try updateConfig { $0.profiles.removeAll { $0.id == id } }
+            try updateState { $0.pendingReconnects.removeAll { $0.profileId == id } }
+        } catch { record(error) }
     }
 
     func addPendingReconnect(_ pending: PendingReconnect) {
-        state.pendingReconnects.removeAll { $0.profileId == pending.profileId }
-        state.pendingReconnects.append(pending)
-        try? saveState()
+        persistStateBestEffort {
+            $0.pendingReconnects.removeAll { $0.profileId == pending.profileId }
+            $0.pendingReconnects.append(pending)
+        }
     }
 
     func clearPendingReconnect(profileId: String) {
-        state.pendingReconnects.removeAll { $0.profileId == profileId }
-        try? saveState()
+        persistStateBestEffort { $0.pendingReconnects.removeAll { $0.profileId == profileId } }
     }
 
     func clearAllPendingReconnects() {
-        guard !state.pendingReconnects.isEmpty else {
-            return
-        }
-        state.pendingReconnects.removeAll()
-        try? saveState()
+        guard !pendingReconnects.isEmpty else { return }
+        persistStateBestEffort { $0.pendingReconnects.removeAll() }
     }
 
     func rememberDisplays(_ displays: [DisplaySnapshot]) {
-        var remembered = state.lastSeenDisplays
-        for display in displays where display.runtimeDisplayID != 0 && !display.isVirtualPlaceholder {
-            if let index = remembered.firstIndex(where: { Self.sameDisplay($0, display) }) {
-                remembered[index] = display
-            } else {
-                remembered.append(display)
+        persistStateBestEffort { state in
+            for display in displays where display.runtimeDisplayID != 0 && !display.isVirtualPlaceholder {
+                if let index = state.lastSeenDisplays.firstIndex(where: { $0.hasSameStableIdentity(as: display) }) {
+                    state.lastSeenDisplays[index] = display
+                } else {
+                    state.lastSeenDisplays.append(display)
+                }
             }
         }
-        state.lastSeenDisplays = remembered
-        try? saveState()
     }
 
     func reload() {
-        config = Self.load(url: AppPaths.configURL, decoder: decoder) ?? config
-        state = Self.load(url: AppPaths.stateURL, decoder: decoder) ?? state
+        do {
+            if let config = try Self.load(AppConfig.self, from: configURL, decoder: decoder) {
+                withLock { storedConfig = config }
+            }
+            if let state = try Self.load(AppState.self, from: stateURL, decoder: decoder) {
+                withLock { storedState = state }
+            }
+        } catch { record(error) }
     }
 
     func exportConfig(to url: URL) throws {
-        try saveConfig()
-        guard AppPaths.configURL.standardizedFileURL != url.standardizedFileURL else {
-            return
-        }
-        try FileManager.default.copyReplacingItem(at: AppPaths.configURL, to: url)
+        let data = try withLock { try encoder.encode(storedConfig) }
+        try Self.secureAtomicWrite(data, to: url)
     }
 
     func importConfig(from url: URL) throws {
         let data = try Data(contentsOf: url)
         var importedConfig = try decoder.decode(AppConfig.self, from: data)
-        importedConfig.contextMenu = importedConfig.contextMenu.normalized()
-        if importedConfig.archive.enabledFormats.isEmpty {
-            importedConfig.archive = .defaultValue
+        guard ConfigurationRecoveryPolicy.canImport(
+            schemaVersion: importedConfig.schemaVersion,
+            currentVersion: AppConfig.currentSchemaVersion
+        ) else {
+            throw ProfileStoreError.unsupportedSchema(importedConfig.schemaVersion)
         }
-        config = importedConfig
-        try saveConfig()
+        importedConfig.contextMenu = importedConfig.contextMenu.normalized()
+        if importedConfig.archive.enabledFormats.isEmpty { importedConfig.archive = .defaultValue }
+        try updateConfig { $0 = importedConfig }
     }
 
     func backupConfigToICloud() throws -> URL {
@@ -144,50 +274,141 @@ final class ProfileStore {
               let backupURL = AppPaths.iCloudConfigBackupURL else {
             throw ProfileStoreError.iCloudUnavailable
         }
-        try AppPaths.ensureDirectories()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try exportConfig(to: backupURL)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let envelope = ConfigurationBackupEnvelope(
+            version: AppConfig.currentSchemaVersion,
+            createdAt: Date(),
+            config: config
+        )
+        let data = try encoder.encode(envelope)
+        var coordinationError: NSError?
+        var writeError: Error?
+        NSFileCoordinator().coordinate(writingItemAt: backupURL, options: .forReplacing, error: &coordinationError) { coordinatedURL in
+            do { try Self.secureAtomicWrite(data, to: coordinatedURL) } catch { writeError = error }
+        }
+        if let coordinationError { throw coordinationError }
+        if let writeError { throw writeError }
         return backupURL
     }
 
     func syncConfigFromICloud() throws {
-        guard let backupURL = AppPaths.iCloudConfigBackupURL else {
-            throw ProfileStoreError.iCloudUnavailable
+        guard let backupURL = AppPaths.iCloudConfigBackupURL else { throw ProfileStoreError.iCloudUnavailable }
+        guard FileManager.default.fileExists(atPath: backupURL.path) else { throw ProfileStoreError.iCloudBackupMissing }
+        var coordinationError: NSError?
+        var readResult: Result<Data, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: backupURL, options: [], error: &coordinationError) { coordinatedURL in
+            readResult = Result { try Data(contentsOf: coordinatedURL) }
         }
-        guard FileManager.default.fileExists(atPath: backupURL.path) else {
+        if let coordinationError { throw coordinationError }
+        guard let data = try readResult?.get() else { throw ProfileStoreError.iCloudBackupMissing }
+        let envelope = try decoder.decode(ConfigurationBackupEnvelope.self, from: data)
+        guard envelope.version <= AppConfig.currentSchemaVersion else {
+            throw ProfileStoreError.unsupportedSchema(envelope.version)
+        }
+        try updateConfig { $0 = envelope.config }
+    }
+
+    func iCloudBackupDifferenceSummary() throws -> String {
+        guard let backupURL = AppPaths.iCloudConfigBackupURL,
+              FileManager.default.fileExists(atPath: backupURL.path) else {
             throw ProfileStoreError.iCloudBackupMissing
         }
-        try importConfig(from: backupURL)
+        let envelope = try decoder.decode(ConfigurationBackupEnvelope.self, from: Data(contentsOf: backupURL))
+        let current = config
+        let formatter = ISO8601DateFormatter()
+        return """
+        备份时间：\(formatter.string(from: envelope.createdAt))
+        显示器配置：当前 \(current.profiles.count) 项 → 备份 \(envelope.config.profiles.count) 项
+        剪贴板：\(current.clipboard.enabled ? "开启" : "关闭") / \(current.clipboard.retentionDays) 天 → \(envelope.config.clipboard.enabled ? "开启" : "关闭") / \(envelope.config.clipboard.retentionDays) 天
+        Finder 菜单：\(current.contextMenu.enabled ? "开启" : "关闭") → \(envelope.config.contextMenu.enabled ? "开启" : "关闭")
+        """
     }
 
     func saveConfig() throws {
-        try AppPaths.ensureDirectories()
-        let data = try encoder.encode(config)
-        try data.write(to: AppPaths.configURL, options: .atomic)
-        try data.write(to: AppPaths.finderSyncConfigURL, options: .atomic)
+        try withLock {
+            storedConfig.schemaVersion = AppConfig.currentSchemaVersion
+            let data = try encoder.encode(storedConfig)
+            try Self.secureAtomicWrite(data, to: configURL)
+            if let finderSyncConfigURL { try Self.secureAtomicWrite(data, to: finderSyncConfigURL) }
+        }
     }
 
     func saveState() throws {
-        try AppPaths.ensureDirectories()
-        let data = try encoder.encode(state)
-        try data.write(to: AppPaths.stateURL, options: .atomic)
+        try withLock { try Self.secureAtomicWrite(encoder.encode(storedState), to: stateURL) }
     }
 
-    private static func load<T: Decodable>(url: URL, decoder: JSONDecoder) -> T? {
-        guard let data = try? Data(contentsOf: url) else {
+    private func persistBestEffort(_ mutation: (inout AppConfig) -> Void) {
+        do { try updateConfig(mutation) } catch { record(error) }
+    }
+
+    private func persistStateBestEffort(_ mutation: (inout AppState) -> Void) {
+        do { try updateState(mutation) } catch { record(error) }
+    }
+
+    private func record(_ error: Error) {
+        withLock { lastPersistenceError = error }
+        AppLogger.shared.error("配置保存失败：\(error.localizedDescription)")
+    }
+
+    private func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
+    }
+
+    private static func load<T: Decodable>(_ type: T.Type, from url: URL, decoder: JSONDecoder) throws -> T? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try decoder.decode(T.self, from: Data(contentsOf: url))
+    }
+
+    private static func ensureParentDirectory(for url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    }
+
+    private static func secureAtomicWrite(_ data: Data, to url: URL) throws {
+        try ensureParentDirectory(for: url)
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func backupCorruptFile(at url: URL) -> URL? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let backupURL = url.deletingLastPathComponent().appendingPathComponent(
+            "\(url.lastPathComponent).corrupt-\(formatter.string(from: Date()))"
+        )
+        do {
+            try FileManager.default.copyItem(at: url, to: backupURL)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
+            return backupURL
+        } catch {
             return nil
         }
-        return try? decoder.decode(T.self, from: data)
     }
+}
 
-    private static func sameDisplay(_ lhs: DisplaySnapshot, _ rhs: DisplaySnapshot) -> Bool {
-        lhs.hasSameStableIdentity(as: rhs)
-    }
+private struct ConfigurationBackupEnvelope: Codable {
+    let version: Int
+    let createdAt: Date
+    let config: AppConfig
 }
 
 enum ProfileStoreError: LocalizedError {
     case iCloudUnavailable
     case iCloudBackupMissing
+    case unsupportedSchema(Int)
 
     var errorDescription: String? {
         switch self {
@@ -195,15 +416,8 @@ enum ProfileStoreError: LocalizedError {
             return "当前无法访问 iCloud Drive。请确认系统已登录 Apple ID，并已启用 iCloud Drive。"
         case .iCloudBackupMissing:
             return "没有找到 iCloud 配置备份。请先在这台或另一台 Mac 上执行备份。"
+        case .unsupportedSchema(let version):
+            return "备份格式版本 \(version) 高于当前应用支持的版本，已取消恢复。"
         }
-    }
-}
-
-private extension FileManager {
-    func copyReplacingItem(at sourceURL: URL, to destinationURL: URL) throws {
-        if fileExists(atPath: destinationURL.path) {
-            try removeItem(at: destinationURL)
-        }
-        try copyItem(at: sourceURL, to: destinationURL)
     }
 }

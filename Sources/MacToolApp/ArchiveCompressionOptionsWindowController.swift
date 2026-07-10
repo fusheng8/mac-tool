@@ -6,14 +6,15 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
     private let completion: (ArchiveCompressionOptions) -> Void
     private let onCancel: () -> Void
 
-    private let nameField = NSTextField()
-    private let formatPopup = NSPopUpButton()
-    private let stripMetadataCheckbox = NSButton(checkboxWithTitle: "去除 .DS_Store 和 macOS 元数据", target: nil, action: nil)
-    private let compressionLevelSlider = NSSlider(value: 6, minValue: 0, maxValue: 9, target: nil, action: nil)
+    private let nameField = MacSearchField()
+    private let formatPopup = MacSelectControl()
+    private let stripMetadataCheckbox = MacCheckboxControl()
+    private let compressionLevelSlider = MacSliderControl(value: 6, minValue: 0, maxValue: 9, target: nil, action: nil)
     private let compressionLevelLabel = NSTextField(labelWithString: "")
-    private let passwordField = NSSecureTextField()
-    private let wrapFolderCheckbox = NSButton(checkboxWithTitle: "包一层文件夹", target: nil, action: nil)
+    private let passwordField = MacSearchField()
+    private let wrapFolderCheckbox = MacCheckboxControl()
     private let hintLabel = NSTextField(labelWithString: "")
+    private var availableFormats: [ArchiveFormat] = []
 
     init(
         urls: [URL],
@@ -55,21 +56,13 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
         let title = NSTextField(labelWithString: "压缩参数")
         title.font = .systemFont(ofSize: 18, weight: .semibold)
 
-        nameField.stringValue = defaultArchiveName()
-        nameField.placeholderString = "压缩包文件名"
+        nameField.text = defaultArchiveName()
+        nameField.placeholder = "压缩包文件名"
+        nameField.showsSearchIcon = false
 
-        ArchiveFormat.allCases
-            .filter { config.supports($0) }
-            .forEach { format in
-                let item = NSMenuItem(title: format.title, action: nil, keyEquivalent: "")
-                item.representedObject = format.rawValue
-                formatPopup.menu?.addItem(item)
-            }
-        if formatPopup.numberOfItems == 0 {
-            let item = NSMenuItem(title: ArchiveFormat.zip.title, action: nil, keyEquivalent: "")
-            item.representedObject = ArchiveFormat.zip.rawValue
-            formatPopup.menu?.addItem(item)
-        }
+        availableFormats = ArchiveFormat.allCases.filter { config.supports($0) }
+        if availableFormats.isEmpty { availableFormats = [.zip] }
+        formatPopup.items = availableFormats.map(\.title)
         selectFormat(.zip)
         formatPopup.target = self
         formatPopup.action = #selector(formatChanged)
@@ -77,16 +70,16 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
         stripMetadataCheckbox.state = config.stripMacMetadataWhenCompressing ? .on : .off
 
         compressionLevelSlider.integerValue = ArchiveConfig.normalizedCompressionLevel(config.defaultCompressionLevel)
-        compressionLevelSlider.numberOfTickMarks = 10
-        compressionLevelSlider.allowsTickMarkValuesOnly = true
-        compressionLevelSlider.controlSize = .small
+        compressionLevelSlider.increment = 1
         compressionLevelSlider.target = self
         compressionLevelSlider.action = #selector(compressionLevelChanged)
         compressionLevelLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         compressionLevelLabel.textColor = .secondaryLabelColor
         updateCompressionLevelLabel()
 
-        passwordField.placeholderString = "可选，仅 ZIP / 7Z / RAR 支持"
+        passwordField.placeholder = "可选，仅 ZIP / 7Z / RAR 支持"
+        passwordField.showsSearchIcon = false
+        passwordField.isSecure = true
         passwordField.isEnabled = selectedFormat.supportsCompressionPassword
 
         wrapFolderCheckbox.state = urls.count > 1 ? .on : .off
@@ -97,11 +90,12 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
         hintLabel.maximumNumberOfLines = 2
         updateHint()
 
-        let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancel))
-        cancelButton.bezelStyle = .rounded
-        let createButton = NSButton(title: "开始压缩", target: self, action: #selector(confirm))
-        createButton.bezelStyle = .rounded
-        createButton.keyEquivalent = "\r"
+        let cancelButton = MacTextButton(title: "取消")
+        cancelButton.target = self
+        cancelButton.action = #selector(cancel)
+        let createButton = MacTextButton(title: "开始压缩", role: .primary)
+        createButton.target = self
+        createButton.action = #selector(confirm)
 
         let buttonStack = NSStackView(views: [cancelButton, createButton])
         buttonStack.orientation = .horizontal
@@ -118,8 +112,8 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
         stack.addArrangedSubview(row(title: "格式", control: formatPopup))
         stack.addArrangedSubview(row(title: "压缩等级", control: compressionLevelControl()))
         stack.addArrangedSubview(row(title: "密码", control: passwordField))
-        stack.addArrangedSubview(stripMetadataCheckbox)
-        stack.addArrangedSubview(wrapFolderCheckbox)
+        stack.addArrangedSubview(checkboxRow(title: "去除 .DS_Store 和 macOS 元数据", control: stripMetadataCheckbox))
+        stack.addArrangedSubview(checkboxRow(title: "包一层文件夹", control: wrapFolderCheckbox))
         stack.addArrangedSubview(hintLabel)
         stack.addArrangedSubview(buttonStack)
 
@@ -166,10 +160,21 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
         return stack
     }
 
+    private func checkboxRow(title: String, control: MacCheckboxControl) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 13)
+        control.setAccessibilityLabel(title)
+        let stack = NSStackView(views: [control, label])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        return stack
+    }
+
     @objc private func formatChanged() {
         passwordField.isEnabled = selectedFormat.supportsCompressionPassword
         if !passwordField.isEnabled {
-            passwordField.stringValue = ""
+            passwordField.text = ""
         }
         compressionLevelSlider.isEnabled = selectedFormat.supportsCompressionLevel
         if selectedFormat.isSingleFileCompression {
@@ -186,12 +191,12 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
     }
 
     @objc private func confirm() {
-        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = nameField.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
             NSSound.beep()
             return
         }
-        let password = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let password = passwordField.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let options = ArchiveCompressionOptions(
             archiveName: name,
             format: selectedFormat,
@@ -210,21 +215,11 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
     }
 
     private var selectedFormat: ArchiveFormat {
-        guard let raw = formatPopup.selectedItem?.representedObject as? String,
-              let format = ArchiveFormat(rawValue: raw) else {
-            return .zip
-        }
-        return format
+        availableFormats.indices.contains(formatPopup.selectedIndex) ? availableFormats[formatPopup.selectedIndex] : .zip
     }
 
     private func selectFormat(_ format: ArchiveFormat) {
-        for index in 0..<formatPopup.numberOfItems {
-            if formatPopup.item(at: index)?.representedObject as? String == format.rawValue {
-                formatPopup.selectItem(at: index)
-                return
-            }
-        }
-        formatPopup.selectItem(at: 0)
+        formatPopup.selectedIndex = availableFormats.firstIndex(of: format) ?? 0
     }
 
     private func updateHint() {

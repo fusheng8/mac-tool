@@ -55,7 +55,7 @@ final class ClipboardHistoryStoreTests: XCTestCase {
             metadata: makeMetadata(
                 contentType: "文件",
                 detailText: "文件 · budget.txt",
-                sourcePaths: ["/Users/fusheng/Documents/budget.txt"],
+                sourcePaths: ["/Users/example/Documents/budget.txt"],
                 fileNames: ["budget.txt"],
                 pasteboardTypes: [storedType.type]
             )
@@ -127,7 +127,49 @@ final class ClipboardHistoryStoreTests: XCTestCase {
         XCTAssertEqual(loaded[0].metadata.detailText, "文本 · 纯文本")
         XCTAssertEqual(try fixture.store.loadStoredTypes(itemID: item.id), [storedType])
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("clipboard-history.json.migrated").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("clipboard-history.json.migrated").path))
+    }
+
+    func testDatabaseAndBlobDoNotContainPlaintext() throws {
+        let fixture = try makeStoreFixture()
+        let secret = "TOP-SECRET-CLIPBOARD-VALUE"
+        let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data(secret.utf8))
+        _ = try fixture.store.insert(
+            makeItem(preview: secret, plainText: secret, storedTypes: [storedType]),
+            maxHistoryCount: 20,
+            retentionDays: 30
+        )
+
+        let allFiles = try FileManager.default.subpathsOfDirectory(atPath: fixture.rootDirectory.path)
+        for relativePath in allFiles {
+            let url = fixture.rootDirectory.appendingPathComponent(relativePath)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { continue }
+            let data = try Data(contentsOf: url)
+            XCTAssertNil(data.range(of: Data(secret.utf8)), "明文出现在 \(relativePath)")
+        }
+    }
+
+    func testWrongEncryptionKeyCannotReadHistory() throws {
+        let root = try makeTemporaryDirectory()
+        let fixture = try makeStoreFixture(rootDirectory: root)
+        let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("encrypted".utf8))
+        _ = try fixture.store.insert(
+            makeItem(preview: "encrypted", plainText: "encrypted", storedTypes: [storedType]),
+            maxHistoryCount: 20,
+            retentionDays: 30
+        )
+        let clipboardDirectory = root.appendingPathComponent("Clipboard", isDirectory: true)
+        let reopened = ClipboardHistoryStore(
+            rootDirectory: clipboardDirectory,
+            databaseURL: clipboardDirectory.appendingPathComponent("clipboard-v2.sqlite"),
+            blobDirectory: fixture.blobDirectory,
+            thumbnailDirectory: fixture.thumbnailDirectory,
+            thumbnailCacheDirectory: clipboardDirectory.appendingPathComponent("cache-2"),
+            legacyHistoryURL: nil,
+            cryptoProvider: EphemeralClipboardCryptoProvider(keyData: Data(repeating: 0x3C, count: 32))
+        )
+        XCTAssertThrowsError(try reopened.loadHistory(maxHistoryCount: 20, retentionDays: 30))
     }
 
     private func makeStoreFixture(
@@ -136,14 +178,16 @@ final class ClipboardHistoryStoreTests: XCTestCase {
     ) throws -> (store: ClipboardHistoryStore, rootDirectory: URL, blobDirectory: URL, thumbnailDirectory: URL) {
         let root = try rootDirectory ?? makeTemporaryDirectory()
         let clipboardDirectory = root.appendingPathComponent("Clipboard", isDirectory: true)
-        let blobDirectory = clipboardDirectory.appendingPathComponent("blobs", isDirectory: true)
-        let thumbnailDirectory = clipboardDirectory.appendingPathComponent("thumbnails", isDirectory: true)
+        let blobDirectory = clipboardDirectory.appendingPathComponent("encrypted-blobs", isDirectory: true)
+        let thumbnailDirectory = clipboardDirectory.appendingPathComponent("encrypted-thumbnails", isDirectory: true)
         let store = ClipboardHistoryStore(
             rootDirectory: clipboardDirectory,
-            databaseURL: clipboardDirectory.appendingPathComponent("clipboard.sqlite"),
+            databaseURL: clipboardDirectory.appendingPathComponent("clipboard-v2.sqlite"),
             blobDirectory: blobDirectory,
             thumbnailDirectory: thumbnailDirectory,
-            legacyHistoryURL: legacyHistoryURL
+            thumbnailCacheDirectory: clipboardDirectory.appendingPathComponent("thumbnail-cache", isDirectory: true),
+            legacyHistoryURL: legacyHistoryURL,
+            cryptoProvider: EphemeralClipboardCryptoProvider()
         )
         return (store, root, blobDirectory, thumbnailDirectory)
     }

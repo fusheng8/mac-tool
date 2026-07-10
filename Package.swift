@@ -9,7 +9,9 @@ let package = Package(
     ],
     products: [
         .executable(name: "mac-tool", targets: ["MacToolApp"]),
-        .executable(name: "mac-tool-finder-sync", targets: ["MacToolFinderSync"])
+        .executable(name: "mac-tool-finder-sync", targets: ["MacToolFinderSync"]),
+        .library(name: "MacToolCore", targets: ["MacToolCore"]),
+        .library(name: "MacToolBridge", targets: ["MacToolBridge"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", .upToNextMajor(from: "7.10.0")),
@@ -31,10 +33,20 @@ let package = Package(
                 .linkedFramework("IOKit")
             ]
         ),
+        .target(
+            name: "MacToolCore",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "MacToolBridge",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         .executableTarget(
             name: "MacToolApp",
             dependencies: [
                 "DDCBackend",
+                "MacToolCore",
+                "MacToolBridge",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Sparkle", package: "Sparkle")
             ],
@@ -52,13 +64,15 @@ let package = Package(
                 .linkedFramework("CoreSpotlight"),
                 .linkedFramework("QuickLookUI"),
                 .linkedFramework("UniformTypeIdentifiers"),
-                .linkedFramework("ServiceManagement")
+                .linkedFramework("ServiceManagement"),
+                .linkedFramework("UserNotifications")
             ]
         ),
         .executableTarget(
             name: "MacToolFinderSync",
+            dependencies: ["MacToolBridge"],
             swiftSettings: [
-                .swiftLanguageMode(.v5)
+                .swiftLanguageMode(.v6)
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
@@ -67,7 +81,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MacToolAppTests",
-            dependencies: ["MacToolApp"]
+            dependencies: ["MacToolApp", "MacToolCore", "MacToolBridge"]
         )
     ]
 )

@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Foundation
+import MacToolCore
 
 enum MatchMode: String, Codable, CaseIterable {
     case strict
@@ -234,11 +235,11 @@ struct DisconnectConfig: Codable, Hashable {
     var confirmBeforeDisconnect: Bool
 
     static let defaultValue = DisconnectConfig(
-        enabled: true,
-        allowSoftDisconnect: true,
+        enabled: false,
+        allowSoftDisconnect: false,
         autoReconnect: true,
         autoReconnectDelaySeconds: 30,
-        externalOnly: false,
+        externalOnly: true,
         confirmBeforeDisconnect: true
     )
 
@@ -269,11 +270,11 @@ struct DisconnectConfig: Codable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
-        allowSoftDisconnect = try container.decodeIfPresent(Bool.self, forKey: .allowSoftDisconnect) ?? true
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        allowSoftDisconnect = try container.decodeIfPresent(Bool.self, forKey: .allowSoftDisconnect) ?? false
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? true
         autoReconnectDelaySeconds = try container.decodeIfPresent(Int.self, forKey: .autoReconnectDelaySeconds) ?? 30
-        externalOnly = try container.decodeIfPresent(Bool.self, forKey: .externalOnly) ?? false
+        externalOnly = try container.decodeIfPresent(Bool.self, forKey: .externalOnly) ?? true
         confirmBeforeDisconnect = try container.decodeIfPresent(Bool.self, forKey: .confirmBeforeDisconnect) ?? true
     }
 }
@@ -287,27 +288,6 @@ struct DisplayProfile: Codable, Hashable, Identifiable {
     var colorLock: ColorLockConfig
     var disconnect: DisconnectConfig
     var automationEnabled: Bool
-
-    static let dm73uProDefault = DisplayProfile(
-        id: "dm73u-pro",
-        enabled: true,
-        name: "DM73u pro",
-        matchMode: .strict,
-        match: DisplayMatchRule(
-            displayName: "DM73u pro",
-            edidUUID: "4C236527-0000-0000-0123-0104B53C2178",
-            vendorId: "0x4c23",
-            modelId: "0x2765",
-            serialNumber: "",
-            manufacturer: "SAC",
-            alphanumericSerial: "",
-            ioLocation: "",
-            matchThreshold: 80
-        ),
-        colorLock: .p3Default,
-        disconnect: .defaultValue,
-        automationEnabled: false
-    )
 }
 
 struct PendingReconnect: Codable, Hashable, Identifiable {
@@ -381,9 +361,9 @@ enum ClipboardShortcut: String, CaseIterable, Codable, Hashable {
         case .showActionsMenu:
             return "等同于对当前选中记录点鼠标右键。"
         case .selectPreviousApplication, .selectNextApplication:
-            return "在剪切板顶部应用筛选条中切换。"
+            return "在剪贴板顶部应用筛选条中切换。"
         default:
-            return "剪切板历史面板打开时生效。"
+            return "剪贴板历史面板打开时生效。"
         }
     }
 
@@ -482,7 +462,7 @@ struct ClipboardConfig: Codable, Hashable {
         recordingPaused: false,
         excludeKnownPasswordManagers: true,
         excludedBundleIdentifiers: [],
-        retentionDays: 0,
+        retentionDays: ClipboardPrivacyPolicy.defaultRetentionDays,
         pollIntervalMilliseconds: 650,
         structuredPreviewLimitKB: 256
     )
@@ -537,7 +517,7 @@ struct ClipboardConfig: Codable, Hashable {
         recordingPaused = try container.decodeIfPresent(Bool.self, forKey: .recordingPaused) ?? false
         excludeKnownPasswordManagers = try container.decodeIfPresent(Bool.self, forKey: .excludeKnownPasswordManagers) ?? true
         excludedBundleIdentifiers = try container.decodeIfPresent([String].self, forKey: .excludedBundleIdentifiers) ?? []
-        retentionDays = max(0, try container.decodeIfPresent(Int.self, forKey: .retentionDays) ?? 0)
+        retentionDays = max(0, try container.decodeIfPresent(Int.self, forKey: .retentionDays) ?? ClipboardPrivacyPolicy.defaultRetentionDays)
         pollIntervalMilliseconds = Self.normalizedPollIntervalMilliseconds(
             try container.decodeIfPresent(Int.self, forKey: .pollIntervalMilliseconds) ?? 650
         )
@@ -1141,19 +1121,30 @@ struct ClipboardHistoryItem: Codable, Hashable, Identifiable {
 }
 
 struct AppConfig: Codable {
+    static let currentSchemaVersion = 2
+
+    var schemaVersion: Int
     var profiles: [DisplayProfile]
     var clipboard: ClipboardConfig
     var archive: ArchiveConfig
     var contextMenu: ContextMenuConfig
 
     enum CodingKeys: String, CodingKey {
+        case schemaVersion
         case profiles
         case clipboard
         case archive
         case contextMenu
     }
 
-    init(profiles: [DisplayProfile], clipboard: ClipboardConfig, archive: ArchiveConfig, contextMenu: ContextMenuConfig) {
+    init(
+        schemaVersion: Int = AppConfig.currentSchemaVersion,
+        profiles: [DisplayProfile],
+        clipboard: ClipboardConfig,
+        archive: ArchiveConfig,
+        contextMenu: ContextMenuConfig
+    ) {
+        self.schemaVersion = schemaVersion
         self.profiles = profiles
         self.clipboard = clipboard
         self.archive = archive
@@ -1162,6 +1153,7 @@ struct AppConfig: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
         profiles = try container.decode([DisplayProfile].self, forKey: .profiles)
         clipboard = try container.decodeIfPresent(ClipboardConfig.self, forKey: .clipboard) ?? .defaultValue
         archive = try container.decodeIfPresent(ArchiveConfig.self, forKey: .archive) ?? .defaultValue
@@ -1169,7 +1161,7 @@ struct AppConfig: Codable {
     }
 
     static let defaultValue = AppConfig(
-        profiles: [.dm73uProDefault],
+        profiles: [],
         clipboard: .defaultValue,
         archive: .defaultValue,
         contextMenu: .defaultValue
@@ -1179,21 +1171,54 @@ struct AppConfig: Codable {
 struct AppState: Codable {
     var pendingReconnects: [PendingReconnect]
     var lastSeenDisplays: [DisplaySnapshot]
+    var onboardingVersion: Int
+    var privacyNoticeVersion: Int
+    var displayAutomationConsentVersion: Int
+    var displayAutomationApproved: Bool
+    var appDisconnectedDisplayIDs: [UInt32]
+    var lastCleanShutdown: Bool
 
     enum CodingKeys: String, CodingKey {
         case pendingReconnects
         case lastSeenDisplays
+        case onboardingVersion
+        case privacyNoticeVersion
+        case displayAutomationConsentVersion
+        case displayAutomationApproved
+        case appDisconnectedDisplayIDs
+        case lastCleanShutdown
     }
 
-    init(pendingReconnects: [PendingReconnect], lastSeenDisplays: [DisplaySnapshot]) {
+    init(
+        pendingReconnects: [PendingReconnect],
+        lastSeenDisplays: [DisplaySnapshot],
+        onboardingVersion: Int = 0,
+        privacyNoticeVersion: Int = 0,
+        displayAutomationConsentVersion: Int = 0,
+        displayAutomationApproved: Bool = false,
+        appDisconnectedDisplayIDs: [UInt32] = [],
+        lastCleanShutdown: Bool = true
+    ) {
         self.pendingReconnects = pendingReconnects
         self.lastSeenDisplays = lastSeenDisplays
+        self.onboardingVersion = onboardingVersion
+        self.privacyNoticeVersion = privacyNoticeVersion
+        self.displayAutomationConsentVersion = displayAutomationConsentVersion
+        self.displayAutomationApproved = displayAutomationApproved
+        self.appDisconnectedDisplayIDs = appDisconnectedDisplayIDs
+        self.lastCleanShutdown = lastCleanShutdown
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         pendingReconnects = try container.decodeIfPresent([PendingReconnect].self, forKey: .pendingReconnects) ?? []
         lastSeenDisplays = try container.decodeIfPresent([DisplaySnapshot].self, forKey: .lastSeenDisplays) ?? []
+        onboardingVersion = try container.decodeIfPresent(Int.self, forKey: .onboardingVersion) ?? 0
+        privacyNoticeVersion = try container.decodeIfPresent(Int.self, forKey: .privacyNoticeVersion) ?? 0
+        displayAutomationConsentVersion = try container.decodeIfPresent(Int.self, forKey: .displayAutomationConsentVersion) ?? 0
+        displayAutomationApproved = try container.decodeIfPresent(Bool.self, forKey: .displayAutomationApproved) ?? false
+        appDisconnectedDisplayIDs = try container.decodeIfPresent([UInt32].self, forKey: .appDisconnectedDisplayIDs) ?? []
+        lastCleanShutdown = try container.decodeIfPresent(Bool.self, forKey: .lastCleanShutdown) ?? true
     }
 
     static let empty = AppState(pendingReconnects: [], lastSeenDisplays: [])

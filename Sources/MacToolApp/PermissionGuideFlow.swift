@@ -262,14 +262,8 @@ private final class PermissionGuidePanelView: NSView {
 
         let appDragView = PermissionAppDragView(appURL: appURL)
 
-        let closeButton = NSButton(
-            image: MacAssistantUI.symbol("xmark", pointSize: 11, weight: .bold) ?? NSImage(),
-            target: PermissionGuideFlow.shared,
-            action: #selector(NSWindow.performClose(_:))
-        )
-        closeButton.bezelStyle = .regularSquare
-        closeButton.isBordered = false
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        let closeButton = MacIconButton(symbolName: "xmark")
+        closeButton.style = .subtle
         closeButton.target = self
         closeButton.action = #selector(closePanel)
 

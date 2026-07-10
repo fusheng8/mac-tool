@@ -3,8 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -15,18 +14,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  verify:
+    # Keep this status context stable: main branch protection requires "Swift Build".
     name: Swift Build
     runs-on: macos-15
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
       - name: Show toolchain
         run: |
           swift --version
           xcodebuild -version
-
-      - name: Build package
-        run: swift build
+      - name: Build with warnings as errors
+        run: swift build -Xswiftc -warnings-as-errors
+      - name: Test with coverage
+        run: swift test --enable-code-coverage -Xswiftc -warnings-as-errors
+      - name: Enforce coverage thresholds
+        run: scripts/check_coverage.sh
+      - name: Build arm64 Release app
+        env:
+          ALLOW_ADHOC: "1"
+        run: scripts/build_app.sh
+      - name: Verify packaged architecture and signatures
+        run: |
+          app='.build/Mac助手.app'
+          test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
+          test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
+          codesign --verify --deep --strict "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$(tr -d '[:space:]' < VERSION)"
+          if rg -a -n '/Users/[^/]+/' "$app"; then
+            echo "Packaged app contains a user-specific absolute path" >&2
+            exit 1
+          fi

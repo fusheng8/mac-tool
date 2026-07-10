@@ -3,11 +3,11 @@ import CoreServices
 import CoreSpotlight
 import Darwin
 import Foundation
+import MacToolBridge
 import Sparkle
 import UniformTypeIdentifiers
 
 private extension Notification.Name {
-    static let macToolContextMenuAction = Notification.Name("com.fusheng.mac-tool.contextMenuAction")
     static let macToolOpenSettings = Notification.Name("com.fusheng.mac-tool.openSettings")
     static let macToolOpenFiles = Notification.Name("com.fusheng.mac-tool.openFiles")
     static let macToolOpenURL = Notification.Name("com.fusheng.mac-tool.openURL")
@@ -127,7 +127,7 @@ private func runDisplayRestoreWatchdog(parentPID: pid_t) {
 
     let store = ProfileStore()
     let detector = DisplayDetector()
-    let disconnect = SoftDisconnectController(detector: detector)
+    let disconnect = SoftDisconnectController(detector: detector, store: store)
     disconnect.restoreDefaultDisplayState(store: store, reason: "应用被强制关闭")
 }
 
@@ -184,25 +184,6 @@ if CommandLine.arguments.contains("--list-displays") {
     exit(0)
 }
 
-if let actionIndex = CommandLine.arguments.firstIndex(of: "--context-menu-action") {
-    let nextIndex = CommandLine.arguments.index(after: actionIndex)
-    guard CommandLine.arguments.indices.contains(nextIndex),
-          let itemID = ContextMenuItemID(rawValue: CommandLine.arguments[nextIndex]) else {
-        fputs("缺少有效的右键菜单动作 ID\n", stderr)
-        exit(2)
-    }
-
-    let pathStartIndex = CommandLine.arguments.index(after: nextIndex)
-    let urls = CommandLine.arguments[pathStartIndex...].map { URL(fileURLWithPath: $0) }
-    do {
-        try ContextMenuActionExecutor().perform(itemID: itemID, urls: urls)
-        exit(0)
-    } catch {
-        fputs("\(error.localizedDescription)\n", stderr)
-        exit(1)
-    }
-}
-
 private enum AppRuntime {
     static var isSecondaryInstance = false
 }
@@ -224,6 +205,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var progressWindowController: ContextMenuProgressWindowController?
     private var compressionOptionsWindowController: ArchiveCompressionOptionsWindowController?
     private var archiveWindows: [ArchiveBrowserWindowController] = []
+    private var handledContextMenuRequestIDs: [String: Date] = [:]
+    private var onboardingWindowController: OnboardingWindowController?
+    private var backgroundServicesStarted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !AppRuntime.isSecondaryInstance else {
@@ -232,14 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
         try? AppPaths.ensureDirectories()
-        DistributedNotificationCenter.default().addObserver(
-            self,
-            selector: #selector(handleContextMenuActionNotification(_:)),
-            name: .macToolContextMenuAction,
-            object: nil
-        )
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(handleOpenSettingsNotification(_:)),
@@ -259,7 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        disconnect = SoftDisconnectController(detector: detector)
+        disconnect = SoftDisconnectController(detector: detector, store: store)
         automation = AutomationController(store: store, disconnect: disconnect)
         recovery = RecoveryManager(store: store, disconnect: disconnect, automation: automation, statuses: statuses)
         clipboard = ClipboardHistoryController(store: store)
@@ -268,6 +246,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        do {
+            _ = try BridgeCredentialFile.createIfMissing(at: AppPaths.finderBridgeCredentialURL)
+        } catch {
+            AppLogger.shared.error("Finder 桥接凭据初始化失败：\(error.localizedDescription)")
+        }
         if store.contextMenu.enabled {
             SystemCapabilities.registerBundledFinderExtensionIfAvailable()
         }
@@ -313,10 +296,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        automation.start()
-        clipboard.start()
-        recovery.recoverPendingOnLaunch()
-        menuBar.openSystemOverview()
+        let previousExitWasAbnormal = (try? store.markApplicationStarted()) ?? false
+        if previousExitWasAbnormal {
+            AppLogger.shared.error("检测到上次异常退出；本地诊断信息可在设置中导出。")
+        }
+        if store.backgroundTasksAllowed {
+            startBackgroundServices()
+        } else {
+            showOnboarding()
+        }
+        if let recoveryNotice = store.recoveryNotice {
+            AppLogger.shared.error(recoveryNotice)
+        }
         AppLogger.shared.info("Mac助手已启动")
     }
 
@@ -327,6 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         automation?.stop()
         clipboard?.stop()
+        try? store.markApplicationStoppedCleanly()
         AppLogger.shared.info("Mac助手已退出")
     }
 
@@ -336,19 +328,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
 
-        menuBar.openSettingsWindow()
+        menuBar.openSystemOverview()
         return false
     }
 
-    @objc private func handleContextMenuActionNotification(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let rawAction = userInfo["action"] as? String,
-              let itemID = ContextMenuItemID(rawValue: rawAction) else {
-            return
+    private func showOnboarding() {
+        let controller = OnboardingWindowController(store: store) { [weak self] in
+            guard let self else { return }
+            self.onboardingWindowController = nil
+            self.startBackgroundServices()
+            self.menuBar.openSystemOverview()
         }
-        let paths = userInfo["paths"] as? [String] ?? []
-        let urls = paths.map { URL(fileURLWithPath: $0) }
-        performContextMenuAction(itemID: itemID, rawAction: rawAction, urls: urls)
+        onboardingWindowController = controller
+        controller.show()
+    }
+
+    private func startBackgroundServices() {
+        guard !backgroundServicesStarted, store.backgroundTasksAllowed else { return }
+        backgroundServicesStarted = true
+        automation.start()
+        clipboard.start()
+        if store.displayAutomationAllowed {
+            recovery.recoverPendingOnLaunch()
+        }
+        startDisplayRestoreWatchdogIfNeeded()
+        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc private func handleOpenSettingsNotification(_ notification: Notification) {
@@ -480,7 +484,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func hasDisplayBackgroundWork() -> Bool {
-        store.profiles.contains { $0.disconnect.enabled && $0.disconnect.allowSoftDisconnect } || !store.pendingReconnects.isEmpty
+        guard store.displayAutomationAllowed else { return false }
+        return store.profiles.contains {
+            $0.enabled && $0.disconnect.enabled && $0.disconnect.allowSoftDisconnect
+        } || !store.pendingReconnects.isEmpty
     }
 
     private func showArchiveOpenError(_ error: Error) {
@@ -501,15 +508,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard url.scheme == "macassistant",
               url.host == "context-menu",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let rawAction = components.queryItems?.first(where: { $0.name == "action" })?.value,
-              let itemID = ContextMenuItemID(rawValue: rawAction) else {
+              let payload = components.queryItems?.first(where: { $0.name == "payload" })?.value,
+              let signature = components.queryItems?.first(where: { $0.name == "signature" })?.value else {
+            AppLogger.shared.error("拒绝缺少签名的 Finder 请求。")
             return
         }
-        let urls = components.queryItems?
-            .filter { $0.name == "path" }
-            .compactMap(\.value)
-            .map { URL(fileURLWithPath: $0) } ?? []
-        performContextMenuAction(itemID: itemID, rawAction: rawAction, urls: urls)
+        let request: FinderActionRequest
+        do {
+            let key = try BridgeCredentialFile.read(at: AppPaths.finderBridgeCredentialURL)
+            request = try FinderActionCodec.verify(
+                payload: payload,
+                signature: signature,
+                keyData: key,
+                allowedActions: Set(ContextMenuItemID.allCases.map(\.rawValue))
+            )
+        } catch {
+            AppLogger.shared.error("拒绝无效 Finder 请求：\(error.localizedDescription)")
+            return
+        }
+        guard shouldHandleContextMenuRequest(request.id.uuidString),
+              let itemID = ContextMenuItemID(rawValue: request.action) else { return }
+        let urls = request.paths.map { URL(fileURLWithPath: $0) }
+        if requiresDestructiveConfirmation(itemID), !confirmDestructiveFinderAction(itemID: itemID, urls: urls) {
+            AppLogger.shared.info("用户取消了需二次确认的 Finder 动作：\(request.action)")
+            return
+        }
+        performContextMenuAction(itemID: itemID, rawAction: request.action, urls: urls)
+    }
+
+    private func shouldHandleContextMenuRequest(_ requestID: String?) -> Bool {
+        guard let requestID, !requestID.isEmpty else { return false }
+
+        let now = Date()
+        handledContextMenuRequestIDs = handledContextMenuRequestIDs.filter { now.timeIntervalSince($0.value) < 30 }
+        guard handledContextMenuRequestIDs[requestID] == nil else {
+            AppLogger.shared.info("忽略重复右键菜单动作：\(requestID)")
+            return false
+        }
+
+        handledContextMenuRequestIDs[requestID] = now
+        return true
+    }
+
+    private func requiresDestructiveConfirmation(_ itemID: ContextMenuItemID) -> Bool {
+        itemID == .smartExtractAndDelete || itemID == .extractToArchiveNameAndDelete
+    }
+
+    private func confirmDestructiveFinderAction(itemID: ContextMenuItemID, urls: [URL]) -> Bool {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "确认执行“\(itemID.title)”？"
+        alert.informativeText = "成功解压后将删除原压缩文件。即将处理 \(urls.count) 项，此操作需要再次确认。"
+        alert.addButton(withTitle: "继续")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func performContextMenuAction(itemID: ContextMenuItemID, rawAction: String, urls: [URL]) {

@@ -86,6 +86,10 @@ final class AutomationController {
         guard hasBackgroundDisplayWork() else {
             return
         }
+        guard !disconnect.shouldSuppressDisplayEvent() else {
+            logger.info("忽略本应用显示器操作触发的系统回调。")
+            return
+        }
         if flags.contains(.addFlag) || flags.contains(.removeFlag) || flags.contains(.setModeFlag) || flags.contains(.enabledFlag) || flags.contains(.disabledFlag) {
             queue.async { [weak self] in
                 self?.debounceDisplayChange()
@@ -106,7 +110,8 @@ final class AutomationController {
     }
 
     private func hasBackgroundDisplayWork() -> Bool {
-        store.profiles.contains { disconnect.desiredCloseEnabled(profile: $0) } || !store.pendingReconnects.isEmpty
+        guard store.displayAutomationAllowed else { return false }
+        return store.profiles.contains { disconnect.desiredCloseEnabled(profile: $0) } || !store.pendingReconnects.isEmpty
     }
 
     private func localizedReason(_ reason: String) -> String {

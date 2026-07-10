@@ -328,7 +328,7 @@ enum ClipboardPreviewSupport {
         if !sourceApp.isEmpty, sourceApp != "未知应用" {
             details.append("来自 \(sourceApp)")
         }
-        return details.isEmpty ? ["剪切板项目"] : details
+        return details.isEmpty ? ["剪贴板项目"] : details
     }
 
     static func normalizedPreviewText(_ text: String) -> String {

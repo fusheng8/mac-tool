@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import MacToolCore
 
 struct PortUsage: Hashable, Identifiable {
     var id: String {
@@ -348,11 +349,11 @@ final class PortManager {
             case "P":
                 currentProtocol = value.uppercased()
             case "n":
-                guard let pid = currentPID, let port = Self.parsePort(endpoint: value) else {
+                guard let pid = currentPID, let port = PortEndpointParser.port(from: value) else {
                     continue
                 }
                 let endpoint = value
-                let protocolName = currentProtocol.isEmpty ? Self.inferredProtocol(endpoint: endpoint) : currentProtocol
+                let protocolName = currentProtocol.isEmpty ? PortEndpointParser.inferredProtocol(from: endpoint) : currentProtocol
                 let id = "\(pid)-\(protocolName)-\(endpoint)"
                 guard !seenIDs.contains(id) else {
                     continue
@@ -376,26 +377,6 @@ final class PortManager {
         }
 
         return results
-    }
-
-    private static func inferredProtocol(endpoint: String) -> String {
-        if endpoint.localizedCaseInsensitiveContains("udp") {
-            return "UDP"
-        }
-        return "TCP"
-    }
-
-    private static func parsePort(endpoint: String) -> Int? {
-        guard let colonIndex = endpoint.lastIndex(of: ":") else {
-            return nil
-        }
-
-        let tail = endpoint[endpoint.index(after: colonIndex)...]
-        let digits = tail.prefix { $0.isNumber }
-        guard !digits.isEmpty else {
-            return nil
-        }
-        return Int(digits)
     }
 
     private static func executablePath(pid: Int32) -> String {

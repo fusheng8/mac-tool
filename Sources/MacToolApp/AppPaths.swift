@@ -28,6 +28,10 @@ enum AppPaths {
             .appendingPathComponent("config.json")
     }
 
+    static var finderBridgeCredentialURL: URL {
+        finderSyncConfigURL.deletingLastPathComponent().appendingPathComponent("bridge.key")
+    }
+
     static var stateURL: URL {
         applicationSupportDirectory.appendingPathComponent("state.json")
     }
@@ -41,15 +45,29 @@ enum AppPaths {
     }
 
     static var clipboardDatabaseURL: URL {
+        clipboardDirectory.appendingPathComponent("clipboard-v2.sqlite")
+    }
+
+    static var legacyClipboardDatabaseURL: URL {
         clipboardDirectory.appendingPathComponent("clipboard.sqlite")
     }
 
     static var clipboardBlobDirectory: URL {
-        clipboardDirectory.appendingPathComponent("blobs", isDirectory: true)
+        clipboardDirectory.appendingPathComponent("encrypted-blobs", isDirectory: true)
     }
 
     static var clipboardThumbnailDirectory: URL {
-        clipboardDirectory.appendingPathComponent("thumbnails", isDirectory: true)
+        clipboardDirectory.appendingPathComponent("encrypted-thumbnails", isDirectory: true)
+    }
+
+    static var clipboardThumbnailCacheDirectory: URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("com.fusheng.mac-tool", isDirectory: true)
+            .appendingPathComponent("clipboard-thumbnails", isDirectory: true)
+    }
+
+    static var recoveryDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent("Recovery", isDirectory: true)
     }
 
     static var iCloudBackupDirectory: URL? {
@@ -81,13 +99,27 @@ enum AppPaths {
     }
 
     static func ensureDirectories() throws {
-        try FileManager.default.createDirectory(at: applicationSupportDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: clipboardBlobDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: clipboardThumbnailDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(
-            at: finderSyncConfigURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        let directories = [
+            applicationSupportDirectory,
+            logsDirectory,
+            clipboardDirectory,
+            clipboardBlobDirectory,
+            clipboardThumbnailDirectory,
+            recoveryDirectory,
+            finderSyncConfigURL.deletingLastPathComponent()
+        ]
+        for directory in directories {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+    }
+
+    static func secureFile(at url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

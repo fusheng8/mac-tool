@@ -7,3 +7,5 @@ sparkle_private_key*
 AGENTS.md
 agents.md
 .learnings/
+__pycache__/
+*.pyc

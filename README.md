@@ -1,13 +1,15 @@
 # Mac助手
 
-Mac助手是一款面向 macOS 的轻量菜单栏效率工具。它把外接显示器控制、剪切板历史、Finder 右键增强、压缩/解压和端口占用查看放在一个本机 App 里，适合经常连接外接显示器、处理压缩包、排查本地服务端口的 Mac 用户。
+Mac助手是一款面向 macOS 的轻量菜单栏效率工具。它把外接显示器控制、剪贴板历史、Finder 右键增强、压缩/解压和端口占用查看放在一个本机 App 里，适合经常连接外接显示器、处理压缩包、排查本地服务端口的 Mac 用户。
+
+当前稳定版本为 `0.2.0`，仅支持 Apple Silicon（arm64）和 macOS 13 Ventura 或更高版本。隐私、故障恢复和兼容性说明分别见 [PRIVACY.md](PRIVACY.md)、[docs/recovery.md](docs/recovery.md) 与 [docs/compatibility.md](docs/compatibility.md)。
 
 底层项目名和主可执行文件名为 `mac-tool`，App 展示名为 `Mac助手`。
 
 ## 适合场景
 
 - 经常连接外接显示器，需要统一查看显示器身份、切换分辨率、调节亮度/对比度/音量或临时断开外屏。
-- 日常复制内容较多，需要可搜索、可收藏、可快捷粘贴的本地剪切板历史。
+- 日常复制内容较多，需要可搜索、可收藏、可快捷粘贴的本地剪贴板历史。
 - 频繁处理压缩包，希望在 Finder 右键菜单中完成智能解压、自定义压缩和格式转换。
 - 本地开发时经常遇到端口占用，需要快速定位监听端口、应用、PID、监听地址和进程详情。
 - 希望把零散的 macOS 小工具收进一个菜单栏应用，并保留可导入导出的本地配置。
@@ -16,17 +18,17 @@ Mac助手是一款面向 macOS 的轻量菜单栏效率工具。它把外接显�
 
 - **一站式 macOS 工具集合**：把 Finder 右键菜单扩展、显示器管理、压缩/解压、剪贴板历史和端口管理集合到一个轻量菜单栏 App 中。
 - **智能解压**：自动识别压缩包内部结构，单文件或已有顶层目录时直接释放，多文件散落时解压到同名文件夹，减少手动整理。
-- **剪切板预览**：剪切板历史面板适配 macOS 空格预览习惯，图片、文本和文件记录可快速预览后再粘贴。
+- **剪贴板预览**：剪贴板历史面板适配 macOS 空格预览习惯，图片、文本和文件记录可快速预览后再粘贴。
 - **显示器关闭与恢复保护**：支持外接显示器软断开、断开前确认、自动恢复倒计时和安全兜底，尽量避免把所有屏幕关闭。
 - **显示器管理**：扫描当前显示器，按 EDID UUID、厂商 ID、型号 ID、序列号、显示器名称、I/O 位置等稳定特征匹配设备。
 - **外接显示器 DDC/CI 控制**：基于 `m1ddc` 思路整理的 DDC 后端，支持亮度、对比度、音量等常见 VCP 码读写。
 - **分辨率与 HiDPI 切换**：枚举系统已暴露的显示模式，并在设置页中切换分辨率。
-- **剪切板历史**：后台记录剪切板，支持全局快捷键呼出、搜索、按应用筛选、格式粘贴、纯文本粘贴、快捷键导航和密码管理器排除。
+- **剪贴板历史**：后台记录剪贴板，支持全局快捷键呼出、搜索、按应用筛选、格式粘贴、纯文本粘贴、快捷键导航和密码管理器排除。
 - **Finder 右键菜单增强**：通过 Finder Sync 扩展提供复制路径、新建文件、一键用 IntelliJ IDEA 或 VS Code 打开指定目录、终端打开、压缩和解压等动作。
 - **压缩包预览与操作**：支持查看压缩包内容、部分提取、删除条目、压缩为多种格式，并可自动去除 `.DS_Store` 等 macOS 元数据。
 - **端口管理**：查看当前监听端口、协议、应用、PID、监听地址和应用路径，支持搜索、筛选、排序、收藏常用端口和停止占用进程。
 - **权限诊断**：内置辅助功能、自动化、Finder 扩展、完全磁盘访问等权限引导与诊断信息复制。
-- **配置导入导出与 iCloud 备份**：显示器、剪切板、压缩/解压和右键菜单配置都可以导出为 JSON，也可以备份到 iCloud Drive。
+- **配置导入导出与 iCloud 备份**：显示器、剪贴板、压缩/解压和右键菜单配置都可以导出为 JSON，也可以备份到 iCloud Drive。
 
 ## 功能地图
 
@@ -34,7 +36,7 @@ Mac助手是一款面向 macOS 的轻量菜单栏效率工具。它把外接显�
 | --- | --- | --- |
 | 菜单栏 | 状态栏图标 | 快速进入所有功能，查看运行状态，切换登录启动 |
 | 显示器 | 设置窗口 > 显示器 | 识别外接显示器、切换分辨率、执行 DDC/CI 控制、软断开与恢复 |
-| 剪切板 | 全局快捷键 / 设置窗口 > 剪切板 | 搜索历史复制内容，按应用过滤，空格预览，按格式或纯文本快速粘贴 |
+| 剪贴板 | 全局快捷键 / 设置窗口 > 剪贴板 | 搜索历史复制内容，按应用过滤，空格预览，按格式或纯文本快速粘贴 |
 | 压缩/解压 | Finder 右键菜单 / 压缩包双击 / 设置窗口 | 智能解压、自定义压缩、压缩包预览、去除 macOS 元数据 |
 | 右键菜单 | Finder Sync 扩展 | 在 Finder 中新建文件、复制路径，一键调用 IDEA、VS Code 或终端打开指定目录，压缩和解压 |
 | 端口管理 | 设置窗口 > 端口管理 | 查找端口占用，筛选监听地址，查看进程详情，释放端口 |
@@ -46,10 +48,10 @@ Mac助手是一款面向 macOS 的轻量菜单栏效率工具。它把外接显�
 
 Mac助手默认作为菜单栏应用运行，不占用 Dock 位置。状态栏图标用于快速查看当前工作状态，并打开常用模块：
 
-- 打开剪切板历史面板。
-- 进入显示器、剪切板、压缩/解压、右键菜单、端口管理和设置页。
+- 打开剪贴板历史面板。
+- 进入显示器、剪贴板、压缩/解压、右键菜单、端口管理和设置页。
 - 开启或关闭登录启动。
-- 根据剪切板记录数量、右键菜单状态、待恢复显示器数量生成状态提示。
+- 根据剪贴板记录数量、右键菜单状态、待恢复显示器数量生成状态提示。
 
 ### 显示器管理
 
@@ -92,19 +94,19 @@ DDC 控制用于直接向外接显示器写入 VCP 指令，当前提供常见�
 - 应用启动、系统唤醒或显示器变化时，会根据配置检查并恢复期望状态。
 - 保存最近见过的显示器信息，用于恢复时定位目标显示器。
 
-### 剪切板历史
+### 剪贴板历史
 
-剪切板历史用于记录日常复制内容，并提供快速检索和粘贴能力：
+剪贴板历史用于记录日常复制内容，并提供快速检索和粘贴能力：
 
-![剪切板历史设置](docs/screenshots/mac-assistant-clipboard-settings.png)
+![剪贴板历史设置](docs/screenshots/mac-assistant-clipboard-settings.png)
 
-![剪切板历史面板](docs/screenshots/mac-assistant-clipboard-panel.png)
+![剪贴板历史面板](docs/screenshots/mac-assistant-clipboard-panel.png)
 
-- 后台轮询剪切板变化，支持配置监听间隔。
+- 后台轮询剪贴板变化，支持配置监听间隔。
 - 支持全局快捷键呼出，默认快捷键为 `Shift + Command + V`。
 - 支持启用、暂停记录、最多保留条数、按天自动清理。
 - 支持收藏记录，收藏记录不会被按天自动清理。
-- 支持搜索剪切板内容，并按来源应用筛选。
+- 支持搜索剪贴板内容，并按来源应用筛选。
 - 适配 macOS 的空格预览习惯，选中图片、文本或文件记录后可用空格键快速预览内容。
 - 支持默认按格式粘贴，也支持纯文本粘贴。
 - 支持面板内快捷键：选择上一条/下一条、切换应用筛选、粘贴选中项、纯文本粘贴、快速预览、打开更多菜单、快速粘贴可见项。
@@ -198,11 +200,12 @@ Finder 右键菜单依赖 Finder Sync 扩展。首次安装或更换 Bundle ID �
 - 打开辅助功能、自动化、Finder 扩展、完全磁盘访问等系统设置页。
 - 提供授权引导浮窗，方便把当前 App 拖入系统权限列表。
 - 提供 Finder 扩展测试入口，打开下载目录后可直接验证右键菜单是否出现。
-- 一键复制诊断信息，方便定位权限、显示器、配置和日志问题。
+- 一键复制或导出本地诊断文件，方便定位权限、显示器、配置和日志问题。
 
 ## 系统要求
 
 - macOS 13 Ventura 或更高版本。
+- Apple Silicon（arm64）；0.2.0 不提供 Intel 构建。
 - Swift 6 toolchain / Xcode 16 或更高版本。
 - 非沙盒运行环境。项目使用显示相关私有符号和 Finder Sync 扩展，不适合上架 Mac App Store。
 - DDC/CI 功能依赖显示器、连接线和 macOS 当前暴露的底层能力；部分显示器可能不支持亮度、对比度或音量 VCP 码。
@@ -210,18 +213,26 @@ Finder 右键菜单依赖 Finder Sync 扩展。首次安装或更换 Bundle ID �
 
 ## 快速开始
 
-直接构建并安装到 `~/Applications`：
+正式构建要求固定的 Apple Development 签名身份：
 
 ```bash
-scripts/build_app.sh
+CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
 ```
 
-生成并安装：
+`build_app.sh` 只生成 App：
 
 ```text
 .build/Mac助手.app
-~/Applications/Mac助手.app
 ```
+
+安装到默认的 `~/Applications`，或显式安装到系统目录：
+
+```bash
+scripts/install_app.sh
+scripts/install_app.sh /Applications
+```
+
+没有证书时，只有开发验证可显式使用 `ALLOW_ADHOC=1 scripts/build_app.sh`。
 
 打包 DMG：
 
@@ -232,22 +243,10 @@ scripts/build_dmg.sh
 生成位置类似：
 
 ```text
-.build/Mac助手-0.1.0.dmg
+.build/Mac助手-0.2.0.dmg
 ```
 
-只生成 App/DMG、不安装到本机或注册 Finder Sync 扩展：
-
-```bash
-PACKAGE_ONLY=1 scripts/build_dmg.sh
-```
-
-指定 App 内版本号和 DMG 文件名中的版本号：
-
-```bash
-APP_VERSION=0.1.1 PACKAGE_ONLY=1 scripts/build_dmg.sh
-```
-
-仓库内置 GitHub Actions 工作流 `.github/workflows/build-dmg.yml`，会在推送到 `main` / `master`、创建 Pull Request、推送 `0.1.0` 这类版本号标签或手动触发时，在 macOS runner 上打包 DMG，并把 `.build/*.dmg` 上传为 workflow artifact。推送版本号标签时，还会自动创建或更新同名 GitHub Release 并上传 DMG。
+版本号只从仓库根目录的 `VERSION` 读取，构建号取 Git 提交计数。DMG 始终包含指向 `/Applications` 的安装入口。发布工作流只响应与 `VERSION` 一致的版本标签或手动触发；PR 与 `main` 使用只读 CI 验证。
 
 ### 在线更新
 
@@ -257,7 +256,7 @@ Mac助手使用 Sparkle 2 检查并安装后续更新。更新包仍通过 GitHu
 https://fusheng8.github.io/mac-tool/appcast.xml
 ```
 
-项目没有使用 Developer ID 签名和 notarization，因此首次安装仍需要用户手动允许；安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
+0.2.0 个人稳定版使用固定 Apple Development 身份和 Hardened Runtime，暂不包含 Developer ID 公证。安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
 
 ```text
 SPARKLE_PRIVATE_KEY
@@ -265,7 +264,7 @@ SPARKLE_PRIVATE_KEY
 
 私钥本地文件默认放在已忽略的 `private/sparkle_private_key`，不要提交到仓库。GitHub Pages 需要在仓库设置中启用，并选择 GitHub Actions 作为 Pages 来源。
 
-默认使用 ad-hoc 签名。如果你希望辅助功能授权在多次重建后更稳定，建议指定固定的本机代码签名身份：
+正式构建不会回退到 ad-hoc 签名：
 
 ```bash
 security find-identity -v -p codesigning
@@ -275,7 +274,7 @@ CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
 GitHub Actions 也支持使用固定签名 keychain。把本机 keychain 转成 base64 后配置到仓库 Secrets：
 
 ```bash
-base64 -i /Users/fusheng/Desktop/fusheng.keychain | pbcopy
+base64 -i /path/to/release-signing.keychain | pbcopy
 ```
 
 然后在 GitHub 仓库配置：
@@ -286,7 +285,7 @@ MACOS_KEYCHAIN_PASSWORD    # keychain 密码
 MACOS_CODESIGN_IDENTITY    # 可选；不填时会自动取 keychain 中第一个 codesigning identity
 ```
 
-如果未配置 `MACOS_KEYCHAIN_BASE64`，GitHub Actions 会继续回退到 ad-hoc 签名。
+如果未配置 `MACOS_KEYCHAIN_BASE64`，发布工作流会直接失败。
 
 ## 开发
 
@@ -312,7 +311,7 @@ Mac助手会按功能需要引导你开启以下权限：
 
 | 权限 | 影响功能 |
 | --- | --- |
-| 辅助功能 | 剪切板双击粘贴、快捷键粘贴、自动向当前应用发送粘贴快捷键 |
+| 辅助功能 | 剪贴板双击粘贴、快捷键粘贴、自动向当前应用发送粘贴快捷键 |
 | 自动化 | Finder 或系统应用联动动作，macOS 会按目标应用逐项确认 |
 | Finder 扩展 | Finder 右键菜单、压缩/解压、复制路径、新建文件等入口 |
 | 完全磁盘访问 | 更顺畅地处理桌面、文稿、下载、外置磁盘中的压缩包 |
@@ -338,9 +337,13 @@ killall Finder
 | --- | --- |
 | 主配置 | `~/Library/Application Support/mac-tool/config.json` |
 | 运行状态 | `~/Library/Application Support/mac-tool/state.json` |
-| 剪切板历史 | `~/Library/Application Support/mac-tool/clipboard-history.json` |
+| 剪贴板加密库 | `~/Library/Application Support/mac-tool/Clipboard/clipboard-v2.sqlite` |
+| 剪贴板密文 blob | `~/Library/Application Support/mac-tool/Clipboard/encrypted-blobs/` |
+| 剪贴板密文缩略图 | `~/Library/Application Support/mac-tool/Clipboard/encrypted-thumbnails/` |
+| 剪贴板密钥 | 登录钥匙串，`ThisDeviceOnly`，不会导出或同步 |
 | 日志 | `~/Library/Logs/mac-tool/app.log` |
 | Finder Sync 配置副本 | `~/Library/Containers/com.fusheng.mac-tool.FinderSyncExtension/Data/Library/Application Support/mac-tool/config.json` |
+| Finder 桥接密钥 | Finder 扩展容器中的 `bridge.key`，不会导出或备份 |
 | iCloud 配置备份 | `~/Library/Mobile Documents/com~apple~CloudDocs/Mac助手/config-backup.json` |
 
 ## 项目结构
@@ -348,11 +351,14 @@ killall Finder
 ```text
 Sources/
   DDCBackend/                  Objective-C DDC/CI 与显示器底层桥接
+  MacToolCore/                 Swift 6 安全策略、加密原语、端口与归档规则
+  MacToolBridge/               App 与 Finder 扩展共享的签名请求模型
   MacToolApp/                   主 AppKit 菜单栏应用
   MacToolFinderSync/            Finder Sync 右键菜单扩展
 Resources/                      App 图标与状态栏图标
 scripts/
-  build_app.sh                  构建、签名并安装本地 App
+  build_app.sh                  构建并签名本地 App
+  install_app.sh                安装已构建 App，默认到 ~/Applications
   build_dmg.sh                  构建 DMG
   finder_sync_extension.entitlements
 Licenses/
@@ -364,7 +370,7 @@ Licenses/
 - DDC 和软断开能力依赖 macOS 私有显示相关符号，系统版本变化可能影响可用性。
 - 外接显示器控制结果取决于显示器固件、连接方式、扩展坞和线材。
 - Finder Sync 扩展受 macOS 权限、系统缓存和 Finder 状态影响，首次安装后可能需要重启 Finder 或重新启用扩展。
-- 剪切板历史会写入本地 JSON 文件；如果你会复制敏感内容，请开启密码管理器排除、暂停记录或定期清理历史。
+- 剪贴板历史、元数据、blob 和缩略图均使用本机钥匙串密钥加密；如果你会复制敏感内容，仍建议开启密码管理器排除、暂停记录或定期清理历史。
 
 ## 友情链接
 

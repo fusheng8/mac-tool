@@ -31,6 +31,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         case importConfig
         case iCloudBackup
         case iCloudSync
+        case retryClipboardKey
+        case clearUndecryptableClipboard
     }
 
     private enum PermissionAction: Int {
@@ -40,6 +42,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         case fullDiskAccess
         case refresh
         case copyDiagnostics
+        case exportDiagnostics
         case displayRecovery
         case finderExtensionTest
     }
@@ -100,6 +103,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let disconnect: SoftDisconnectController
     private let recovery: RecoveryManager
     private let statuses: RuntimeStatusStore
+    private let clipboardController: ClipboardHistoryController
     private let ddc = DDCController()
     private let ddcWriteQueue = DispatchQueue(label: "app.mac-tool.ddc-write", qos: .userInitiated)
     private let ddcWriteThrottleInterval: TimeInterval = 0.12
@@ -117,11 +121,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let contentStack = NSStackView()
     private let pageTitleLabel = NSTextField(labelWithString: "")
     private let sidebarSearchField = MacSearchField()
+    private let sidebarNoResultsLabel = MacAssistantUI.caption("未找到相关功能", size: 12)
     private let refreshDisplaysButton = MacIconButton(symbolName: "arrow.clockwise")
     private let systemOverviewSidebarButton = SidebarNavItem(title: "系统概览", symbolName: "desktopcomputer")
     private let settingsSidebarButton = SidebarNavItem(title: "设置", symbolName: "gearshape")
     private let displaySidebarButton = SidebarNavItem(title: "显示器", symbolName: "display")
-    private let clipboardSidebarButton = SidebarNavItem(title: "剪切板", symbolName: "doc.on.clipboard")
+    private let clipboardSidebarButton = SidebarNavItem(title: "剪贴板", symbolName: "doc.on.clipboard")
     private let archiveSidebarButton = SidebarNavItem(title: "压缩/解压", symbolName: "archivebox")
     private let contextMenuSidebarButton = SidebarNavItem(title: "右键菜单", symbolName: "cursorarrow.click.2")
     private let portManagementSidebarButton = SidebarNavItem(title: "端口管理", symbolName: "network")
@@ -134,7 +139,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let clipboardRetentionDaysControl = MacNumberControl()
     private let clipboardPollIntervalControl = MacNumberControl()
     private let clipboardStructuredPreviewLimitControl = MacNumberControl()
-    private let clipboardExcludedAppsField = NSTextField(string: "")
+    private let clipboardExcludedAppsField = MacSearchField()
     private let contextMenuEnabledSwitch = MacSwitchControl()
     private let archiveStripMacMetadataSwitch = MacSwitchControl()
     private let archiveDefaultOpenerSwitch = MacSwitchControl()
@@ -147,14 +152,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let maxHistoryCountControl = MacNumberControl()
     private let portManagementView = PortManagementView()
     private let applicationUninstallerView = ApplicationUninstallerView()
-    private let resolutionPopup = NSPopUpButton()
+    private let resolutionPopup = MacSelectControl()
     private var portManagementWidthConstraint: NSLayoutConstraint?
     private var applicationUninstallerWidthConstraint: NSLayoutConstraint?
     private var displayModeOptions: [DisplayModeOption] = []
     private weak var resolutionStatusLabel: NSTextField?
     private var pendingDisplayModeConfirmation: PendingDisplayModeConfirmation?
     private var displayModeConfirmationTimer: Timer?
-    private var ddcSliders: [DDCQuickSetting: NSSlider] = [:]
+    private var ddcSliders: [DDCQuickSetting: MacSliderControl] = [:]
     private var ddcValueLabels: [DDCQuickSetting: NSTextField] = [:]
     private var pendingDDCWriteWorkItems: [DDCQuickSetting: DispatchWorkItem] = [:]
     private var ddcWriteRequestIDs: [DDCQuickSetting: UUID] = [:]
@@ -183,6 +188,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         disconnect: SoftDisconnectController,
         recovery: RecoveryManager,
         statuses: RuntimeStatusStore,
+        clipboardController: ClipboardHistoryController,
         onCheckForUpdates: @escaping () -> Void = {},
         onSave: @escaping () -> Void,
         onClose: @escaping () -> Void
@@ -192,6 +198,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         self.disconnect = disconnect
         self.recovery = recovery
         self.statuses = statuses
+        self.clipboardController = clipboardController
         self.onCheckForUpdates = onCheckForUpdates
         self.onSave = onSave
         self.onClose = onClose
@@ -313,10 +320,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         clipboardRetentionDaysControl.onChange = { [weak self] _ in
             self?.saveClipboardConfig()
         }
-        clipboardExcludedAppsField.placeholderString = "如 com.1password.1password, com.apple.Safari"
-        clipboardExcludedAppsField.font = .systemFont(ofSize: 12)
-        clipboardExcludedAppsField.target = self
-        clipboardExcludedAppsField.action = #selector(clipboardExcludedAppsChanged)
+        clipboardExcludedAppsField.placeholder = "排除的 Bundle ID"
+        clipboardExcludedAppsField.onChange = { [weak self] _ in self?.saveClipboardConfig() }
     }
 
     private func configureClipboardPollIntervalControl() {
@@ -387,6 +392,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         sidebarSearchField.onChange = { [weak self] _ in
             self?.updateSidebarSearchResults()
         }
+        sidebarSearchField.onKeyCommand = { [weak self] event in
+            self?.handleSidebarSearchKeyCommand(event) ?? false
+        }
+        sidebarNoResultsLabel.alignment = .center
+        sidebarNoResultsLabel.isHidden = true
+        sidebarNoResultsLabel.setAccessibilityLabel("未找到相关功能")
 
         configureSidebarButton(systemOverviewSidebarButton, page: .systemOverview)
         configureSidebarButton(settingsSidebarButton, page: .settings)
@@ -397,7 +408,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         configureSidebarButton(portManagementSidebarButton, page: .portManagement)
         configureSidebarButton(appUninstallSidebarButton, page: .appUninstall)
 
-        let stack = NSStackView(views: [sidebarSearchField, systemOverviewSidebarButton, displaySidebarButton, clipboardSidebarButton, archiveSidebarButton, contextMenuSidebarButton, portManagementSidebarButton, appUninstallSidebarButton, settingsSidebarButton])
+        let stack = NSStackView(views: [sidebarSearchField, systemOverviewSidebarButton, displaySidebarButton, clipboardSidebarButton, archiveSidebarButton, contextMenuSidebarButton, portManagementSidebarButton, appUninstallSidebarButton, settingsSidebarButton, sidebarNoResultsLabel])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.distribution = .fill
@@ -594,7 +605,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         case .displays:
             pageTitleLabel.stringValue = "显示器设置"
         case .clipboard:
-            pageTitleLabel.stringValue = "剪切板历史"
+            pageTitleLabel.stringValue = "剪贴板历史"
         case .archive:
             pageTitleLabel.stringValue = "压缩/解压"
         case .contextMenu:
@@ -622,7 +633,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let items: [(SidebarNavItem, SettingsPage, [String])] = [
             (systemOverviewSidebarButton, .systemOverview, ["系统", "概览", "电脑", "信息", "负载", "内存", "磁盘", "cpu", "system", "overview", "load", "memory", "disk"]),
             (displaySidebarButton, .displays, ["显示器", "显示", "屏幕", "display", "monitor"]),
-            (clipboardSidebarButton, .clipboard, ["剪切板", "剪贴板", "剪切", "复制", "粘贴", "clipboard"]),
+            (clipboardSidebarButton, .clipboard, ["剪贴板", "剪切", "复制", "粘贴", "clipboard"]),
             (archiveSidebarButton, .archive, ["压缩", "解压", "归档", "zip", "tar", "rar", "7z", "archive", "extract", "compress"]),
             (contextMenuSidebarButton, .contextMenu, ["右键菜单", "右键", "菜单", "finder", "context", "menu"]),
             (portManagementSidebarButton, .portManagement, ["端口管理", "端口", "占用", "进程", "应用", "路径", "port", "pid", "process"]),
@@ -635,11 +646,43 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             item.isHidden = !matched
             return (item, page, matched)
         }
+        let hasMatches = matches.contains { $0.2 }
+        sidebarNoResultsLabel.isHidden = hasMatches
 
         if !matches.contains(where: { $0.1 == selectedSettingsPage && $0.2 }),
            let firstMatch = matches.first(where: { $0.2 }) {
             selectedSettingsPage = firstMatch.1
             reloadCurrentPage()
+        }
+    }
+
+    private func handleSidebarSearchKeyCommand(_ event: NSEvent) -> Bool {
+        let visibleItems: [(SidebarNavItem, SettingsPage)] = [
+            (systemOverviewSidebarButton, .systemOverview),
+            (displaySidebarButton, .displays),
+            (clipboardSidebarButton, .clipboard),
+            (archiveSidebarButton, .archive),
+            (contextMenuSidebarButton, .contextMenu),
+            (portManagementSidebarButton, .portManagement),
+            (appUninstallSidebarButton, .appUninstall),
+            (settingsSidebarButton, .settings)
+        ].filter { !$0.0.isHidden }
+        guard !visibleItems.isEmpty else { return event.keyCode == 125 || event.keyCode == 126 || event.keyCode == 36 || event.keyCode == 76 }
+
+        switch event.keyCode {
+        case 125, 126:
+            let current = visibleItems.firstIndex { $0.1 == selectedSettingsPage } ?? 0
+            let delta = event.keyCode == 125 ? 1 : -1
+            let next = (current + delta + visibleItems.count) % visibleItems.count
+            selectedSettingsPage = visibleItems[next].1
+            reloadCurrentPage()
+            return true
+        case 36, 76:
+            reloadCurrentPage()
+            window?.makeFirstResponder(visibleItems.first { $0.1 == selectedSettingsPage }?.0)
+            return true
+        default:
+            return false
         }
     }
 
@@ -1026,21 +1069,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func resolutionControlRow(display: DisplaySnapshot) -> NSView {
-        resolutionPopup.removeAllItems()
-        resolutionPopup.controlSize = .small
-        resolutionPopup.bezelStyle = .rounded
         resolutionPopup.isEnabled = !displayModeOptions.isEmpty
         resolutionPopup.translatesAutoresizingMaskIntoConstraints = false
         resolutionPopup.widthAnchor.constraint(equalToConstant: 268).isActive = true
 
         if displayModeOptions.isEmpty {
-            resolutionPopup.addItem(withTitle: "没有可用模式")
+            resolutionPopup.items = ["没有可用模式"]
         } else {
-            for option in displayModeOptions {
-                resolutionPopup.addItem(withTitle: option.title)
-            }
+            resolutionPopup.items = displayModeOptions.map(\.title)
             if let currentIndex = displayModeOptions.firstIndex(where: \.isCurrent) {
-                resolutionPopup.selectItem(at: currentIndex)
+                resolutionPopup.selectedIndex = currentIndex
             }
         }
 
@@ -1061,10 +1099,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func ddcQuickControlRow(setting: DDCQuickSetting, display: DisplaySnapshot) -> NSView {
-        let slider = NSSlider(value: Double(setting.defaultValue), minValue: 0, maxValue: 100, target: self, action: #selector(ddcSliderChanged(_:)))
-        slider.isContinuous = true
+        let slider = MacSliderControl(value: Double(setting.defaultValue), minValue: 0, maxValue: 100, target: self, action: #selector(ddcSliderChanged(_:)))
         slider.tag = setting.rawValue
-        slider.controlSize = .small
         slider.isEnabled = canUseDDC(display: display)
         slider.translatesAutoresizingMaskIntoConstraints = false
         slider.widthAnchor.constraint(equalToConstant: 190).isActive = true
@@ -1378,15 +1414,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func clipboardSection() -> NSView {
         return section(title: "", rows: [
-            switchRow(title: "启用剪切板历史", detail: "后台记录复制的内容，按格式或纯文本粘贴。", control: clipboardEnabledSwitch),
+            switchRow(title: "启用剪贴板历史", detail: "后台记录复制的内容，按格式或纯文本粘贴。", control: clipboardEnabledSwitch),
             switchRow(title: "暂停记录", detail: "保留快捷键和历史面板，但不再记录新复制内容。", control: clipboardPausedSwitch),
             switchRow(title: "排除常见密码管理器", detail: "自动跳过 1Password、Bitwarden、KeePassXC 等应用。", control: clipboardExcludePasswordManagersSwitch),
-            controlRow(title: "呼出快捷键", detail: "在任意位置快速调出剪切板历史面板。", control: shortcutControl(enabledSwitch: clipboardHotKeyEnabledSwitch, recorder: hotKeyRecorder)),
-            controlRow(title: "监听间隔", detail: "剪切板变更检测频率，数值越小越及时，也会更频繁唤醒应用。", control: millisecondsControl(clipboardPollIntervalControl)),
+            controlRow(title: "呼出快捷键", detail: "在任意位置快速调出剪贴板历史面板。", control: shortcutControl(enabledSwitch: clipboardHotKeyEnabledSwitch, recorder: hotKeyRecorder)),
+            controlRow(title: "监听间隔", detail: "剪贴板变更检测频率，数值越小越及时，也会更频繁唤醒应用。", control: millisecondsControl(clipboardPollIntervalControl)),
             controlRow(title: "最多保留条数", detail: "范围 10 到 10000 条。", control: maxHistoryControl()),
-            controlRow(title: "自动清理天数", detail: "0 表示不按天清理；收藏记录会保留。", control: daysControl(clipboardRetentionDaysControl)),
+            controlRow(title: "自动清理天数", detail: "默认 30 天；收藏记录会保留。", control: daysControl(clipboardRetentionDaysControl)),
             controlRow(title: "结构化预览上限", detail: "JSON、Markdown、CSV/TSV、代码等超过该大小时直接显示原始文本，避免预览卡顿。", control: kilobytesControl(clipboardStructuredPreviewLimitControl)),
             controlRow(title: "排除 App", detail: "输入 Bundle ID，多个用逗号或换行分隔；浏览器隐私窗口无法稳定识别，建议排除整个浏览器。", control: excludedAppsControl()),
+            settingsActionRow(
+                title: "加密存储",
+                detail: "\(clipboardController.encryptionStatus) · \(formatBytes(UInt64(max(0, clipboardController.storageSize))))",
+                buttons: [
+                    settingsActionButton(title: "重试访问", symbolName: "key", action: .retryClipboardKey),
+                    settingsActionButton(title: "清空历史", symbolName: "trash", action: .clearUndecryptableClipboard)
+                ]
+            ),
+            hintRow("数据位置：\(clipboardController.dataLocation)"),
             hintRow("默认按格式粘贴；在历史记录中右键可以选择按格式或原文本粘贴。", compact: true)
         ])
     }
@@ -1402,14 +1447,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 )
             )
         }
-        return section(title: "剪切板面板快捷键", rows: rows)
+        return section(title: "剪贴板面板快捷键", rows: rows)
     }
 
     private func configManagementSection() -> NSView {
         return section(title: "配置", rows: [
             settingsActionRow(
                 title: "配置导入导出",
-                detail: "导出当前配置为 JSON，或从已有 JSON 配置恢复显示器、剪切板、压缩和右键菜单设置。",
+                detail: "导出当前配置为 JSON，或从已有 JSON 配置恢复显示器、剪贴板、压缩和右键菜单设置。",
                 buttons: [
                     settingsActionButton(title: "导出", symbolName: "square.and.arrow.up", action: .exportConfig),
                     settingsActionButton(title: "导入", symbolName: "square.and.arrow.down", action: .importConfig)
@@ -1441,11 +1486,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private func iCloudSettingsSection() -> NSView {
         return section(title: "iCloud", rows: [
             settingsActionRow(
-                title: "iCloud 备份与同步",
-                detail: "手动把当前配置备份到 iCloud Drive，或从 iCloud 备份同步到本机。",
+                title: "iCloud 配置备份",
+                detail: "备份包含版本和时间戳，不包含剪贴板密钥、历史内容或 Finder 桥接密钥。",
                 buttons: [
-                    settingsActionButton(title: "备份", symbolName: "icloud.and.arrow.up", action: .iCloudBackup),
-                    settingsActionButton(title: "同步", symbolName: "icloud.and.arrow.down", action: .iCloudSync)
+                    settingsActionButton(title: "备份到 iCloud", symbolName: "icloud.and.arrow.up", action: .iCloudBackup),
+                    settingsActionButton(title: "从 iCloud 恢复", symbolName: "icloud.and.arrow.down", action: .iCloudSync)
                 ]
             ),
             hintRow(iCloudBackupStatusText())
@@ -1459,7 +1504,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 symbolName: "accessibility",
                 accentColor: MacAssistantUI.Color.blue,
                 title: "辅助功能",
-                detail: "受影响：剪切板双击粘贴、快捷键粘贴、自动向当前应用发送粘贴快捷键。",
+                detail: "受影响：剪贴板双击粘贴、快捷键粘贴、自动向当前应用发送粘贴快捷键。",
                 statusTitle: accessibilityGranted ? "已授权" : "未授权",
                 statusKind: accessibilityGranted ? .granted : .needed,
                 buttonTitle: accessibilityGranted ? "打开设置" : "引导授权",
@@ -1833,17 +1878,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         row.heightAnchor.constraint(equalToConstant: 56).isActive = true
 
         let label = MacAssistantUI.caption("一键复制当前诊断信息，用于定位权限、显示器和配置问题。", size: 12)
-        let button = PermissionActionButton(title: "复制诊断信息", target: self, action: #selector(permissionActionPressed(_:)))
-        button.tag = PermissionAction.copyDiagnostics.rawValue
+        let copyButton = PermissionActionButton(title: "复制", target: self, action: #selector(permissionActionPressed(_:)))
+        copyButton.tag = PermissionAction.copyDiagnostics.rawValue
+        let exportButton = PermissionActionButton(title: "导出文件", target: self, action: #selector(permissionActionPressed(_:)))
+        exportButton.tag = PermissionAction.exportDiagnostics.rawValue
+        let buttons = NSStackView(views: [copyButton, exportButton])
+        buttons.orientation = .horizontal
+        buttons.alignment = .centerY
+        buttons.spacing = 8
+        buttons.translatesAutoresizingMaskIntoConstraints = false
 
         row.addSubview(label)
-        row.addSubview(button)
+        row.addSubview(buttons)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: row.leadingAnchor),
             label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -16),
-            button.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            button.centerYAnchor.constraint(equalTo: row.centerYAnchor)
+            label.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor, constant: -16),
+            buttons.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            buttons.centerYAnchor.constraint(equalTo: row.centerYAnchor)
         ])
         return row
     }
@@ -2208,6 +2260,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         label.translatesAutoresizingMaskIntoConstraints = false
         control.translatesAutoresizingMaskIntoConstraints = false
+        if let accessibleControl = control as? NSControl {
+            accessibleControl.setAccessibilityLabel(title)
+            if let detail {
+                accessibleControl.setAccessibilityHelp(detail)
+            }
+        }
 
         let textStack = NSStackView()
         textStack.orientation = .vertical
@@ -2235,7 +2293,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func loadControls(profile: DisplayProfile, display: DisplaySnapshot) {
         closeDisplaySwitch.state = display.isActive ? .off : .on
-        closeDisplaySwitch.isEnabled = display.runtimeDisplayID != 0
+        closeDisplaySwitch.isEnabled = display.runtimeDisplayID != 0 && disconnect.backendAvailability.available
+        if let reason = disconnect.backendAvailability.reason, !disconnect.backendAvailability.available {
+            closeDisplaySwitch.setAccessibilityHelp(reason)
+        }
         displayAutoReconnectSwitch.state = profile.disconnect.autoReconnect ? .on : .off
         displayReconnectDelayControl.value = max(5, profile.disconnect.autoReconnectDelaySeconds)
         displayConfirmCloseSwitch.state = profile.disconnect.confirmBeforeDisconnect ? .on : .off
@@ -2258,7 +2319,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         clipboardRetentionDaysControl.value = store.clipboard.retentionDays
         clipboardPollIntervalControl.value = store.clipboard.pollIntervalMilliseconds
         clipboardStructuredPreviewLimitControl.value = store.clipboard.structuredPreviewLimitKB
-        clipboardExcludedAppsField.stringValue = store.clipboard.excludedBundleIdentifiers.joined(separator: ", ")
+        clipboardExcludedAppsField.text = store.clipboard.excludedBundleIdentifiers.joined(separator: ", ")
     }
 
     private func loadContextMenuControls() {
@@ -2288,7 +2349,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 allowSoftDisconnect: closeEnabled,
                 autoReconnect: displayAutoReconnectSwitch.state == .on,
                 autoReconnectDelaySeconds: displayReconnectDelayControl.value,
-                externalOnly: false,
+                externalOnly: true,
                 confirmBeforeDisconnect: displayConfirmCloseSwitch.state == .on
             ),
             automationEnabled: false
@@ -2375,7 +2436,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func parsedExcludedBundleIdentifiers() -> [String] {
-        clipboardExcludedAppsField.stringValue
+        clipboardExcludedAppsField.text
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -2812,7 +2873,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         当前设置页: \(pageTitleLabel.stringValue)
         显示器配置数: \(profiles.count)
         等待恢复显示器数: \(store.pendingReconnects.count)
-        剪切板历史: \(store.clipboard.enabled ? "已启用" : "已关闭")，最多 \(store.clipboard.maxHistoryCount) 条，快捷键 \(store.clipboard.hotKey.displayText)
+        剪贴板历史: \(store.clipboard.enabled ? "已启用" : "已关闭")，最多 \(store.clipboard.maxHistoryCount) 条，快捷键 \(store.clipboard.hotKey.displayText)
         Finder 右键菜单: \(store.contextMenu.enabled ? "已启用" : "已关闭")
         压缩/解压格式: \(store.archive.enabledFormats.map(\.title).sorted().joined(separator: ", "))
 
@@ -2820,12 +2881,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         应用支持目录: \(pathDiagnostic(AppPaths.applicationSupportDirectory))
         配置文件: \(pathDiagnostic(AppPaths.configURL))
         状态文件: \(pathDiagnostic(AppPaths.stateURL))
-        剪切板历史: \(pathDiagnostic(AppPaths.clipboardHistoryURL))
+        剪贴板加密库: \(pathDiagnostic(AppPaths.clipboardDatabaseURL))
         Finder 扩展配置: \(pathDiagnostic(AppPaths.finderSyncConfigURL))
         日志目录: \(pathDiagnostic(AppPaths.logsDirectory))
 
         权限状态
-        辅助功能: \(AXIsProcessTrusted() ? "已授权" : "未授权")。影响剪切板双击粘贴、快捷键粘贴、自动粘贴。
+        辅助功能: \(AXIsProcessTrusted() ? "已授权" : "未授权")。影响剪贴板双击粘贴、快捷键粘贴、自动粘贴。
         自动化: 需在系统设置中按目标应用确认。影响 Finder 或系统应用联动动作。
         Finder 扩展: 需在系统设置中启用。影响 Finder 右键菜单、压缩/解压、复制路径、新建文件入口。
         完全磁盘访问: 需在系统设置中手动开启。影响双击打开受保护目录或外置磁盘中的压缩包。
@@ -3103,7 +3164,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             backupConfigToICloud()
         case .iCloudSync:
             syncConfigFromICloud()
+        case .retryClipboardKey:
+            clipboardController.retryEncryptionAccess()
+            reloadCurrentPage()
+        case .clearUndecryptableClipboard:
+            guard confirmClipboardHistoryClear() else { return }
+            clipboardController.clearUndecryptableHistory()
+            reloadCurrentPage()
         }
+    }
+
+    private func confirmClipboardHistoryClear() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "清空全部剪贴板历史？"
+        alert.informativeText = "这会删除当前加密库、blob 和缩略图，无法撤销。不会删除应用配置。"
+        alert.addButton(withTitle: "清空历史")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func exportConfig() {
@@ -3167,8 +3245,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func syncConfigFromICloud() {
-        guard confirmSettingsImport() else { return }
         do {
+            let difference = try store.iCloudBackupDifferenceSummary()
+            guard confirmSettingsImport(additionalMessage: difference) else { return }
             try store.syncConfigFromICloud()
             reloadAfterExternalConfigChange()
             showAlert(title: "iCloud 同步完成", message: "已从 iCloud 备份同步配置到本机。")
@@ -3177,10 +3256,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    private func confirmSettingsImport() -> Bool {
+    private func confirmSettingsImport(additionalMessage: String? = nil) -> Bool {
         let alert = NSAlert()
         alert.messageText = "覆盖当前配置？"
-        alert.informativeText = "导入或同步会替换当前显示器、剪切板、压缩和右键菜单配置。建议先导出当前配置作为备份。"
+        alert.informativeText = [
+            additionalMessage,
+            "导入或恢复会替换当前显示器、剪贴板、压缩和右键菜单配置。建议先导出当前配置作为备份。"
+        ].compactMap { $0 }.joined(separator: "\n\n")
         alert.alertStyle = .warning
         alert.addButton(withTitle: "覆盖")
         alert.addButton(withTitle: "取消")
@@ -3229,6 +3311,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             reloadCurrentPage()
         case .copyDiagnostics:
             copyDiagnosticsToPasteboard()
+        case .exportDiagnostics:
+            exportDiagnostics()
         case .displayRecovery:
             runDisplayRecoveryFallback()
         case .finderExtensionTest:
@@ -3344,13 +3428,38 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(diagnosticText(display: display, profile: profile), forType: .string)
-        setDDCStatus("显示器详情已复制到剪切板。")
+        setDDCStatus("显示器详情已复制到剪贴板。")
     }
 
     private func copyDiagnosticsToPasteboard() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(fullDiagnosticText(), forType: .string)
         showAlert(title: "诊断信息已复制", message: "已复制应用状态、配置路径、权限状态、显示器摘要和最近日志摘要。")
+    }
+
+    private func exportDiagnostics() {
+        let panel = NSSavePanel()
+        panel.title = "导出本地诊断"
+        panel.nameFieldStringValue = "Mac助手诊断.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            do {
+                try self.fullDiagnosticText().write(to: url, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                self.showAlert(title: "诊断已导出", message: "诊断文件仅保存在本机：\(url.path)")
+            } catch {
+                self.showAlert(title: "诊断导出失败", message: error.localizedDescription)
+            }
+        }
+
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(panel.runModal())
+        }
     }
 
     @objc private func applyDisplayMode(_ sender: PermissionActionButton) {
@@ -3369,7 +3478,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             setResolutionStatus("无法读取当前显示模式，已取消切换以避免无法恢复。", isError: true)
             return
         }
-        let index = resolutionPopup.indexOfSelectedItem
+        let index = resolutionPopup.selectedIndex
         guard displayModeOptions.indices.contains(index) else {
             setResolutionStatus("请选择一个有效的显示模式。", isError: true)
             return
@@ -3409,7 +3518,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         readDDCValue(setting: setting, display: display)
     }
 
-    @objc private func ddcSliderChanged(_ sender: NSSlider) {
+    @objc private func ddcSliderChanged(_ sender: MacSliderControl) {
         guard let setting = DDCQuickSetting(rawValue: sender.tag),
               let (display, _) = selectedDisplayAndProfile() else {
             return

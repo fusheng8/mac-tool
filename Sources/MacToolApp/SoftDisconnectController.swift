@@ -1,5 +1,5 @@
-import DDCBackend
 import Foundation
+import MacToolCore
 
 enum SoftDisconnectError: LocalizedError {
     case profileDisabled
@@ -10,6 +10,8 @@ enum SoftDisconnectError: LocalizedError {
     case missingRuntimeDisplayID
     case noBuiltInDisplay
     case backendFailed(String)
+    case backendUnavailable(String)
+    case circuitOpen(Date)
     case stateVerificationFailed(String)
 
     var errorDescription: String? {
@@ -30,6 +32,10 @@ enum SoftDisconnectError: LocalizedError {
             return "无法启用内置屏：当前没有扫描到 MacBook 内置显示器。"
         case .backendFailed(let message):
             return "关闭显示器失败：\(message)"
+        case .backendUnavailable(let message):
+            return "显示器软断开不可用：\(message)"
+        case .circuitOpen(let until):
+            return "显示器操作已暂停到 \(until.formatted(date: .omitted, time: .shortened))，避免持续重试。"
         case .stateVerificationFailed(let message):
             return message
         }
@@ -38,13 +44,37 @@ enum SoftDisconnectError: LocalizedError {
 
 final class SoftDisconnectController {
     private let detector: DisplayDetector
+    private let backend: any DisplayBackend
+    private weak var store: ProfileStore?
+    private let stateLock = NSLock()
+    private var circuitOpenUntil: [String: Date] = [:]
+    private var lastBackendMutationAt: Date?
 
-    init(detector: DisplayDetector) {
+    init(
+        detector: DisplayDetector,
+        backend: any DisplayBackend = DCLDisplayBackend(),
+        store: ProfileStore? = nil
+    ) {
         self.detector = detector
+        self.backend = backend
+        self.store = store
+    }
+
+    var backendAvailability: (available: Bool, reason: String?) {
+        (backend.isAvailable, backend.unavailableReason)
+    }
+
+    func shouldSuppressDisplayEvent(now: Date = Date()) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return DisplaySafetyPolicy.shouldSuppressEvent(lastMutation: lastBackendMutationAt, now: now)
     }
 
     func validateCanDisconnect(profile: DisplayProfile, allProfiles: [DisplayProfile]) throws -> DisplaySnapshot {
-        guard profile.disconnect.enabled, profile.disconnect.allowSoftDisconnect else {
+        guard backend.isAvailable else {
+            throw SoftDisconnectError.backendUnavailable(backend.unavailableReason ?? "当前系统不支持此能力")
+        }
+        guard profile.enabled, profile.disconnect.enabled, profile.disconnect.allowSoftDisconnect else {
             throw SoftDisconnectError.profileDisabled
         }
         guard let display = detector.findDisplay(for: profile) else {
@@ -74,6 +104,7 @@ final class SoftDisconnectController {
         let display = try validateCanDisconnect(profile: profile, allProfiles: allProfiles)
         beforeDisconnect(display)
         try setDisplay(display, enabled: false, verificationProfile: profile)
+        try? store?.rememberAppDisconnectedDisplay(display.runtimeDisplayID)
         return display
     }
 
@@ -90,6 +121,14 @@ final class SoftDisconnectController {
     }
 
     func applyDesiredDisplayStates(store: ProfileStore, reason: String) {
+        guard store.displayAutomationAllowed else {
+            AppLogger.shared.info("显示器自动化尚未获得隐私与安全确认，已跳过：\(reason)。")
+            return
+        }
+        guard backend.isAvailable else {
+            AppLogger.shared.error("显示器软断开不可用：\(backend.unavailableReason ?? "未知原因")")
+            return
+        }
         store.rememberDisplays(detector.onlineDisplays())
 
         if displaySafetyNeedsForcedOpen(profiles: store.profiles) {
@@ -104,10 +143,17 @@ final class SoftDisconnectController {
     }
 
     func restoreDefaultDisplayState(store: ProfileStore, reason: String) {
-        store.rememberDisplays(detector.onlineDisplays())
-        forceAllDisplaysOpen(store: store, reason: reason)
-        if detector.activeDisplayCount() == 0 {
-            AppLogger.shared.error("恢复显示器默认状态后仍未检测到可用亮屏，触发来源：\(reason)。")
+        let ids = store.state.appDisconnectedDisplayIDs
+        guard !ids.isEmpty else { return }
+        for displayID in ids {
+            do {
+                try backend.setDisplayEnabled(displayID, enabled: true)
+                noteBackendMutation()
+                try? store.forgetAppDisconnectedDisplay(displayID)
+                AppLogger.shared.info("已恢复本应用断开的显示器 \(displayID)，触发来源：\(reason)。")
+            } catch {
+                AppLogger.shared.error("恢复本应用断开的显示器 \(displayID) 失败，触发来源：\(reason)：\(error.localizedDescription)")
+            }
         }
     }
 
@@ -119,6 +165,7 @@ final class SoftDisconnectController {
             throw SoftDisconnectError.missingRuntimeDisplayID
         }
         try setDisplay(display, enabled: true, verificationProfile: profile)
+        try? store?.forgetAppDisconnectedDisplay(display.runtimeDisplayID)
     }
 
     func isDisconnected(profile: DisplayProfile) -> Bool {
@@ -134,11 +181,16 @@ final class SoftDisconnectController {
     }
 
     func desiredCloseEnabled(profile: DisplayProfile) -> Bool {
-        profile.disconnect.enabled && profile.disconnect.allowSoftDisconnect
+        DisplaySafetyPolicy.isAutomationEligible(
+            profileEnabled: profile.enabled,
+            disconnectEnabled: profile.disconnect.enabled,
+            allowSoftDisconnect: profile.disconnect.allowSoftDisconnect
+        )
     }
 
     private func applyConfiguredDisconnects(store: ProfileStore, reason: String) {
         for profile in store.profiles where desiredCloseEnabled(profile: profile) {
+            guard !isCircuitOpen(profileID: profile.id) else { continue }
             guard let display = detector.findDisplay(for: profile), display.runtimeDisplayID != 0 else {
                 continue
             }
@@ -152,9 +204,11 @@ final class SoftDisconnectController {
 
             do {
                 try setDisplay(display, enabled: false, verificationProfile: profile)
+                try? store.rememberAppDisconnectedDisplay(display.runtimeDisplayID)
                 store.rememberDisplays([display])
                 AppLogger.shared.info("\(profile.name) 已按用户设置关闭，触发来源：\(reason)。")
             } catch {
+                openCircuit(profileID: profile.id)
                 AppLogger.shared.error("\(profile.name) 按用户设置关闭失败，触发来源：\(reason)：\(error.localizedDescription)")
             }
         }
@@ -209,11 +263,12 @@ final class SoftDisconnectController {
         }
 
         for display in displays {
-            let status = DCLSetDisplayEnabled(display.runtimeDisplayID, true)
-            if status == DCLStatusOK {
-                AppLogger.shared.error("已强制打开显示器 \(display.displayName)，触发来源：\(reason)。")
-            } else {
-                AppLogger.shared.error("强制打开显示器 \(display.displayName) 失败，触发来源：\(reason)：\(String(cString: DCLStatusDescription(status)))")
+            do {
+                try backend.setDisplayEnabled(display.runtimeDisplayID, enabled: true)
+                noteBackendMutation()
+                AppLogger.shared.info("已强制打开显示器 \(display.displayName)，触发来源：\(reason)。")
+            } catch {
+                AppLogger.shared.error("强制打开显示器 \(display.displayName) 失败，触发来源：\(reason)：\(error.localizedDescription)")
             }
         }
     }
@@ -236,18 +291,18 @@ final class SoftDisconnectController {
         if builtIn.isActive {
             return
         }
-        let status = DCLSetDisplayEnabled(builtIn.runtimeDisplayID, true)
-        guard status == DCLStatusOK else {
-            throw SoftDisconnectError.backendFailed(String(cString: DCLStatusDescription(status)))
-        }
+        try backend.setDisplayEnabled(builtIn.runtimeDisplayID, enabled: true)
+        noteBackendMutation()
     }
 
     private func setDisplay(_ display: DisplaySnapshot, enabled: Bool, verificationProfile profile: DisplayProfile) throws {
-        var lastStatus = DCLStatusOK
-        for attempt in 1...3 {
-            lastStatus = DCLSetDisplayEnabled(display.runtimeDisplayID, enabled)
-            guard lastStatus == DCLStatusOK else {
-                Thread.sleep(forTimeInterval: 0.2)
+        for attempt in 1...DisplaySafetyPolicy.maximumAttempts {
+            do {
+                try backend.setDisplayEnabled(display.runtimeDisplayID, enabled: enabled)
+                noteBackendMutation()
+            } catch {
+                if attempt == DisplaySafetyPolicy.maximumAttempts { throw error }
+                Thread.sleep(forTimeInterval: DisplaySafetyPolicy.retryDelay(afterAttempt: attempt))
                 continue
             }
             Thread.sleep(forTimeInterval: 0.45)
@@ -257,12 +312,32 @@ final class SoftDisconnectController {
             AppLogger.shared.error("\(profile.name) 显示器\(enabled ? "打开" : "关闭")状态验证未通过，第 \(attempt) 次重试")
         }
 
-        if lastStatus != DCLStatusOK {
-            throw SoftDisconnectError.backendFailed(String(cString: DCLStatusDescription(lastStatus)))
-        }
         throw SoftDisconnectError.stateVerificationFailed(
             "系统已接受\(enabled ? "打开" : "关闭")请求，但扫描结果显示这台显示器仍未进入目标状态。"
         )
+    }
+
+    private func noteBackendMutation() {
+        stateLock.lock()
+        lastBackendMutationAt = Date()
+        stateLock.unlock()
+    }
+
+    private func isCircuitOpen(profileID: String, now: Date = Date()) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let until = circuitOpenUntil[profileID] else { return false }
+        if until <= now {
+            circuitOpenUntil.removeValue(forKey: profileID)
+            return false
+        }
+        return true
+    }
+
+    private func openCircuit(profileID: String) {
+        stateLock.lock()
+        circuitOpenUntil[profileID] = DisplaySafetyPolicy.circuitOpenUntil(failureDate: Date())
+        stateLock.unlock()
     }
 
     private func displayStateMatches(display: DisplaySnapshot, profile: DisplayProfile, enabled: Bool) -> Bool {

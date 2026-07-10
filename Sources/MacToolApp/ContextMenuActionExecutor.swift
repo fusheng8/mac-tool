@@ -134,10 +134,6 @@ final class ContextMenuActionExecutor {
 
     private func createPowerPointFile(in directory: URL) throws {
         let url = uniqueURL(in: directory, baseName: "新建 PPT", extension: "pptx")
-        if let templateURL = Self.powerPointTemplateURL {
-            try FileManager.default.copyItem(at: templateURL, to: url)
-            return
-        }
         let data = ZipWriter.archive(entries: OfficeTemplate.powerPoint)
         try data.write(to: url, options: .withoutOverwriting)
     }
@@ -204,15 +200,6 @@ final class ContextMenuActionExecutor {
     </html>
     """
 
-    private static var powerPointTemplateURL: URL? {
-        let candidates = [
-            Bundle.main.resourceURL?
-                .appendingPathComponent("Templates", isDirectory: true)
-                .appendingPathComponent("BlankPowerPoint.pptx"),
-            URL(fileURLWithPath: "/Users/fusheng/Desktop/演示文稿1.pptx")
-        ]
-        return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
-    }
 }
 
 private struct ExternalApp {

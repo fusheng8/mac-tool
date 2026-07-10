@@ -5,10 +5,10 @@ final class ContextMenuProgressWindowController: NSWindowController {
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(wrappingLabelWithString: "")
     private let progressIndicator = NSProgressIndicator()
-    private let closeButton = NSButton(title: "关闭", target: nil, action: nil)
-    private let revealButton = NSButton(title: "在 Finder 中显示", target: nil, action: nil)
-    private let openButton = NSButton(title: "打开文件夹", target: nil, action: nil)
-    private let copyPathButton = NSButton(title: "复制路径", target: nil, action: nil)
+    private let closeButton = MacTextButton(title: "关闭")
+    private let revealButton = MacTextButton(title: "在 Finder 中显示")
+    private let openButton = MacTextButton(title: "打开文件夹")
+    private let copyPathButton = MacTextButton(title: "复制路径")
     private var closeWorkItem: DispatchWorkItem?
     private var actionURL: URL?
 
@@ -115,13 +115,11 @@ final class ContextMenuProgressWindowController: NSWindowController {
 
         closeButton.target = self
         closeButton.action = #selector(closePressed)
-        closeButton.bezelStyle = .rounded
         closeButton.isHidden = true
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
         for button in [revealButton, openButton, copyPathButton] {
             button.target = self
-            button.bezelStyle = .rounded
             button.isHidden = true
             button.translatesAutoresizingMaskIntoConstraints = false
         }

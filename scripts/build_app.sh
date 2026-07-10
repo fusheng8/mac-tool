@@ -3,8 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$ROOT_DIR/.build/Mac助手.app"
-INSTALL_DIR="/Applications"
-INSTALLED_APP_DIR="$INSTALL_DIR/Mac助手.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -13,25 +11,36 @@ PLUGINS_DIR="$CONTENTS_DIR/PlugIns"
 EXTENSION_DIR="$PLUGINS_DIR/mac-tool-finder-sync.appex"
 EXTENSION_CONTENTS_DIR="$EXTENSION_DIR/Contents"
 EXTENSION_MACOS_DIR="$EXTENSION_CONTENTS_DIR/MacOS"
-CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
-PACKAGE_ONLY="${PACKAGE_ONLY:-0}"
-APP_VERSION="${APP_VERSION:-0.1.0}"
-APP_BUILD_VERSION="${APP_BUILD_VERSION:-$APP_VERSION}"
+ALLOW_ADHOC="${ALLOW_ADHOC:-0}"
+SWIFT_PACKAGE_ARGS=()
+if [[ "${DISABLE_SWIFTPM_SANDBOX:-0}" == "1" ]]; then
+    SWIFT_PACKAGE_ARGS+=(--disable-sandbox)
+fi
+APP_VERSION="${APP_VERSION:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")}"
+APP_BUILD_VERSION="${APP_BUILD_VERSION:-$(git -C "$ROOT_DIR" rev-list --count HEAD)}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-eyi+nHTzTn99VVto7AhjOAjXE908zK36XXjKLWRRxSU=}"
 
-if [[ ! "$APP_VERSION" =~ '^[0-9]+(\.[0-9]+){2}$' ]]; then
-    echo "APP_VERSION 必须是 x.y.z 格式，例如 0.1.0" >&2
+if [[ "$ALLOW_ADHOC" == "1" ]]; then
+    CODESIGN_IDENTITY="-"
+elif [[ -z "${CODESIGN_IDENTITY:-}" || "$CODESIGN_IDENTITY" != "Apple Development:"* ]]; then
+    echo "正式构建必须设置固定的 Apple Development 签名身份。开发构建可显式使用 ALLOW_ADHOC=1。" >&2
     exit 1
 fi
 
-if [[ ! "$APP_BUILD_VERSION" =~ '^[0-9]+(\.[0-9]+){2}$' ]]; then
-    echo "APP_BUILD_VERSION 必须是 x.y.z 格式，例如 0.1.0" >&2
+if [[ ! "$APP_VERSION" =~ '^[0-9]+(\.[0-9]+){2}$' ]]; then
+    echo "APP_VERSION 必须是 x.y.z 格式，例如 0.2.0" >&2
+    exit 1
+fi
+
+if [[ ! "$APP_BUILD_VERSION" =~ '^[0-9]+$' ]]; then
+    echo "APP_BUILD_VERSION 必须是正整数，默认取 Git 提交计数" >&2
     exit 1
 fi
 
 cd "$ROOT_DIR"
-swift build -c release --product mac-tool
-swift build -c release --product mac-tool-finder-sync
+swift build "${SWIFT_PACKAGE_ARGS[@]}" -c release --arch arm64 --product mac-tool -Xswiftc -gnone -Xswiftc -warnings-as-errors
+swift build "${SWIFT_PACKAGE_ARGS[@]}" -c release --arch arm64 --product mac-tool-finder-sync -Xswiftc -gnone -Xswiftc -warnings-as-errors
+BIN_DIR="$(swift build "${SWIFT_PACKAGE_ARGS[@]}" -c release --arch arm64 --show-bin-path)"
 
 SPARKLE_FRAMEWORK_SOURCE="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 if [[ ! -d "$SPARKLE_FRAMEWORK_SOURCE" ]]; then
@@ -45,8 +54,10 @@ MAC_TOOL_RESOURCE_BUNDLE="$(find "$ROOT_DIR/.build/arm64-apple-macosx/release" "
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$EXTENSION_MACOS_DIR"
-cp "$ROOT_DIR/.build/release/mac-tool" "$MACOS_DIR/mac-tool"
-cp "$ROOT_DIR/.build/release/mac-tool-finder-sync" "$EXTENSION_MACOS_DIR/mac-tool-finder-sync"
+cp "$BIN_DIR/mac-tool" "$MACOS_DIR/mac-tool"
+cp "$BIN_DIR/mac-tool-finder-sync" "$EXTENSION_MACOS_DIR/mac-tool-finder-sync"
+strip -S "$MACOS_DIR/mac-tool"
+strip -S "$EXTENSION_MACOS_DIR/mac-tool-finder-sync"
 ditto "$SPARKLE_FRAMEWORK_SOURCE" "$FRAMEWORKS_DIR/Sparkle.framework"
 SPARKLE_RESOURCES_DIR="$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Resources"
 SPARKLE_ZH_CN_STRINGS="$SPARKLE_RESOURCES_DIR/zh_CN.lproj/Sparkle.strings"
@@ -66,10 +77,6 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/mac-to
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 cp "$ROOT_DIR/Resources/StatusIconRingTemplate.png" "$RESOURCES_DIR/StatusIconRingTemplate.png"
 cp "$ROOT_DIR/Resources/StatusIconRingGray.png" "$RESOURCES_DIR/StatusIconRingGray.png"
-mkdir -p "$RESOURCES_DIR/Templates"
-if [[ -f "$HOME/Desktop/演示文稿1.pptx" ]]; then
-    cp "$HOME/Desktop/演示文稿1.pptx" "$RESOURCES_DIR/Templates/BlankPowerPoint.pptx"
-fi
 
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -95,7 +102,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.0.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
@@ -204,7 +211,7 @@ cat > "$EXTENSION_CONTENTS_DIR/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.0.0</string>
     <key>CFBundleSupportedPlatforms</key>
     <array>
         <string>MacOSX</string>
@@ -234,26 +241,17 @@ PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD_VERSION" "$EXTENSION_CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $SPARKLE_PUBLIC_ED_KEY" "$CONTENTS_DIR/Info.plist"
 
-codesign --force --deep --sign "$CODESIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
-codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT_DIR/scripts/finder_sync_extension.entitlements" "$EXTENSION_DIR"
-codesign --force --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+codesign --force --deep --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
+codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT_DIR/scripts/finder_sync_extension.entitlements" "$EXTENSION_DIR"
+codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+
+if [[ "$(lipo -archs "$MACOS_DIR/mac-tool")" != "arm64" || "$(lipo -archs "$EXTENSION_MACOS_DIR/mac-tool-finder-sync")" != "arm64" ]]; then
+    echo "构建失败：主程序或 Finder 扩展不是纯 arm64。" >&2
+    exit 1
+fi
 
 echo "已创建 $APP_DIR"
 echo "版本号：$APP_VERSION ($APP_BUILD_VERSION)"
 echo "签名身份：$CODESIGN_IDENTITY"
 echo "Sparkle：$SPARKLE_FRAMEWORK_SOURCE"
 echo "资源包：${MAC_TOOL_RESOURCE_BUNDLE:-未找到，已使用直接复制资源}"
-
-if [[ "$PACKAGE_ONLY" == "1" ]]; then
-    echo "已跳过安装和 Finder Sync 注册"
-else
-    mkdir -p "$INSTALL_DIR"
-    rm -rf "$INSTALLED_APP_DIR"
-    cp -R "$APP_DIR" "$INSTALLED_APP_DIR"
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP_DIR"
-    pluginkit -a "$INSTALLED_APP_DIR/Contents/PlugIns/mac-tool-finder-sync.appex"
-    pluginkit -e use -i com.fusheng.mac-tool.FinderSyncExtension
-
-    echo "已安装 $INSTALLED_APP_DIR"
-    echo "如右键菜单未出现，请运行：killall Finder"
-fi

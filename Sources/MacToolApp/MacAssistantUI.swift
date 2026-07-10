@@ -2,19 +2,63 @@ import AppKit
 
 enum MacAssistantUI {
     enum Color {
-        static let window = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.99, alpha: 0.94)
-        static let sidebar = NSColor(calibratedRed: 0.91, green: 0.93, blue: 0.97, alpha: 0.70)
-        static let sidebarSelected = NSColor(calibratedRed: 0.80, green: 0.86, blue: 0.98, alpha: 0.78)
-        static let card = NSColor.white.withAlphaComponent(0.82)
-        static let cardHover = NSColor(calibratedRed: 0.94, green: 0.96, blue: 0.99, alpha: 0.88)
-        static let separator = NSColor(calibratedRed: 0.75, green: 0.79, blue: 0.86, alpha: 0.38)
-        static let hairline = NSColor(calibratedRed: 0.84, green: 0.87, blue: 0.92, alpha: 0.55)
+        static var window: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.99, alpha: 0.96),
+                dark: NSColor(calibratedRed: 0.105, green: 0.115, blue: 0.14, alpha: 0.98)
+            )
+        }
+
+        static var sidebar: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.91, green: 0.93, blue: 0.97, alpha: 0.78),
+                dark: NSColor(calibratedRed: 0.14, green: 0.155, blue: 0.19, alpha: 0.88)
+            )
+        }
+
+        static var sidebarSelected: NSColor {
+            let alpha: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.95 : 0.78
+            return dynamic(
+                light: NSColor(calibratedRed: 0.80, green: 0.86, blue: 0.98, alpha: alpha),
+                dark: NSColor(calibratedRed: 0.19, green: 0.29, blue: 0.46, alpha: alpha)
+            )
+        }
+
+        static var card: NSColor {
+            dynamic(
+                light: NSColor.white.withAlphaComponent(0.86),
+                dark: NSColor(calibratedRed: 0.16, green: 0.17, blue: 0.20, alpha: 0.92)
+            )
+        }
+
+        static var cardHover: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.94, green: 0.96, blue: 0.99, alpha: 0.92),
+                dark: NSColor(calibratedRed: 0.20, green: 0.22, blue: 0.27, alpha: 0.96)
+            )
+        }
+
+        static var separator: NSColor {
+            let alpha: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.72 : 0.42
+            return NSColor.separatorColor.withAlphaComponent(alpha)
+        }
+
+        static var hairline: NSColor {
+            let alpha: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.88 : 0.58
+            return NSColor.separatorColor.withAlphaComponent(alpha)
+        }
         static let mutedText = NSColor.secondaryLabelColor
         static let subtleText = NSColor.tertiaryLabelColor
         static let blue = NSColor.systemBlue
         static let amber = NSColor.systemOrange
         static let purple = NSColor.systemPurple
         static let green = NSColor.systemGreen
+
+        private static func dynamic(light: NSColor, dark: NSColor) -> NSColor {
+            NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            }
+        }
     }
 
     static func symbol(_ name: String, pointSize: CGFloat = 15, weight: NSFont.Weight = .medium) -> NSImage? {
@@ -51,24 +95,41 @@ enum MacAssistantUI {
 }
 
 final class LayerBackedView: NSView {
+    private let storedBackgroundColor: NSColor
+    private let storedBorderColor: NSColor?
+
     init(
         backgroundColor: NSColor = .clear,
         cornerRadius: CGFloat = 0,
         borderColor: NSColor? = nil,
         borderWidth: CGFloat = 0
     ) {
+        storedBackgroundColor = backgroundColor
+        storedBorderColor = borderColor
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = backgroundColor.cgColor
         layer?.cornerRadius = cornerRadius
         layer?.cornerCurve = .continuous
-        layer?.borderColor = borderColor?.cgColor
         layer?.borderWidth = borderWidth
+        updateResolvedColors()
         translatesAutoresizingMaskIntoConstraints = false
     }
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateResolvedColors()
+        needsDisplay = true
+    }
+
+    private func updateResolvedColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = storedBackgroundColor.cgColor
+            layer?.borderColor = storedBorderColor?.cgColor
+        }
     }
 }
 
@@ -76,9 +137,131 @@ final class MacFlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+final class MacLoadingPlaceholderView: NSView {
+    private let spinner = MacLoadingSpinnerView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(wrappingLabelWithString: "")
+
+    init(title: String, detail: String) {
+        super.init(frame: .zero)
+        setup(title: title, detail: detail)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("未实现 init(coder:)")
+    }
+
+    func startAnimating() {
+        spinner.startAnimating()
+    }
+
+    func stopAnimating() {
+        spinner.stopAnimating()
+    }
+
+    private func setup(title: String, detail: String) {
+        translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.stringValue = title
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.alignment = .center
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        detailLabel.stringValue = detail
+        detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        detailLabel.textColor = .tertiaryLabelColor
+        detailLabel.alignment = .center
+        detailLabel.maximumNumberOfLines = 2
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [spinner, titleLabel, detailLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 9
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            spinner.widthAnchor.constraint(equalToConstant: 30),
+            spinner.heightAnchor.constraint(equalToConstant: 30),
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24)
+        ])
+    }
+}
+
+private final class MacLoadingSpinnerView: NSView {
+    private var timer: Timer?
+    private var phase = 0 {
+        didSet { needsDisplay = true }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("未实现 init(coder:)")
+    }
+
+    deinit {
+        timer?.invalidate()
+    }
+
+    func startAnimating() {
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 18.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.phase = (self.phase + 1) % 12
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func stopAnimating() {
+        timer?.invalidate()
+        timer = nil
+        phase = 0
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopAnimating()
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let radius = min(bounds.width, bounds.height) / 2 - 4
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        for index in 0..<12 {
+            let progress = CGFloat((index - phase + 12) % 12) / 11
+            let alpha = 0.18 + (1 - progress) * 0.70
+            let angle = CGFloat(index) * (.pi * 2 / 12) - .pi / 2
+            let dotRadius: CGFloat = 2.0
+            let point = NSPoint(
+                x: center.x + cos(angle) * radius,
+                y: center.y + sin(angle) * radius
+            )
+            let rect = NSRect(x: point.x - dotRadius, y: point.y - dotRadius, width: dotRadius * 2, height: dotRadius * 2)
+            MacAssistantUI.Color.blue.withAlphaComponent(alpha).setFill()
+            NSBezierPath(ovalIn: rect).fill()
+        }
+    }
+}
+
 final class MacSwitchControl: NSControl {
     var state: NSControl.StateValue = .off {
-        didSet { updateLayers(animated: true) }
+        didSet {
+            updateLayers(animated: true)
+            setAccessibilityValue(state == .on)
+            NSAccessibility.post(element: self, notification: .valueChanged)
+        }
     }
 
     private let trackLayer = CALayer()
@@ -96,6 +279,17 @@ final class MacSwitchControl: NSControl {
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: 42, height: 24)
+    }
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 else {
+            super.keyDown(with: event)
+            return
+        }
+        state = state == .on ? .off : .on
+        sendAction(action, to: target)
     }
 
     override var isEnabled: Bool {
@@ -130,6 +324,12 @@ final class MacSwitchControl: NSControl {
         thumbLayer.shadowRadius = 2
         thumbLayer.shadowOffset = NSSize(width: 0, height: 1)
         updateLayers(animated: false)
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.checkBox)
+        setAccessibilityLabel("开关")
+        setAccessibilityHelp("按空格键或回车键切换")
+        setAccessibilityValue(false)
     }
 
     private func updateLayers(animated: Bool) {
@@ -143,7 +343,7 @@ final class MacSwitchControl: NSControl {
         let knobFrame = CGRect(x: knobX, y: 2, width: knobSize, height: knobSize)
 
         CATransaction.begin()
-        CATransaction.setDisableActions(!animated)
+        CATransaction.setDisableActions(!animated || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         CATransaction.setAnimationDuration(0.16)
         trackLayer.backgroundColor = trackColor
         thumbLayer.frame = knobFrame
@@ -154,7 +354,11 @@ final class MacSwitchControl: NSControl {
 
 final class MacCheckboxControl: NSControl {
     var state: NSControl.StateValue = .off {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            setAccessibilityValue(state == .on)
+            NSAccessibility.post(element: self, notification: .valueChanged)
+        }
     }
 
     var tintColor = MacAssistantUI.Color.blue {
@@ -177,6 +381,17 @@ final class MacCheckboxControl: NSControl {
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: 18, height: 18)
+    }
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 else {
+            super.keyDown(with: event)
+            return
+        }
+        state = state == .on ? .off : .on
+        sendAction(action, to: target)
     }
 
     override var isEnabled: Bool {
@@ -234,6 +449,12 @@ final class MacCheckboxControl: NSControl {
         translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(equalToConstant: 18).isActive = true
         heightAnchor.constraint(equalToConstant: 18).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.checkBox)
+        setAccessibilityLabel("复选框")
+        setAccessibilityHelp("按空格键或回车键切换")
+        setAccessibilityValue(false)
     }
 }
 
@@ -255,6 +476,16 @@ final class SidebarNavItem: NSControl {
         sendAction(action, to: target)
     }
 
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 else {
+            super.keyDown(with: event)
+            return
+        }
+        sendAction(action, to: target)
+    }
+
     func setSelected(_ selected: Bool, accentColor: NSColor) {
         layer?.backgroundColor = selected ? MacAssistantUI.Color.sidebarSelected.cgColor : NSColor.clear.cgColor
         iconView.contentTintColor = accentColor
@@ -268,6 +499,11 @@ final class SidebarNavItem: NSControl {
         layer?.cornerCurve = .continuous
         translatesAutoresizingMaskIntoConstraints = false
         heightAnchor.constraint(equalToConstant: 30).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
+        setAccessibilityHelp("打开\(title)")
 
         iconView.image = MacAssistantUI.symbol(symbolName, pointSize: 15, weight: .regular)
         iconView.contentTintColor = normalTint
@@ -294,6 +530,8 @@ final class SidebarNavItem: NSControl {
 }
 
 final class MacSearchField: NSControl, NSTextInputClient {
+    var showsSearchIcon = true { didSet { needsDisplay = true } }
+    var isSecure = false { didSet { needsDisplay = true } }
     var placeholder = "" {
         didSet { needsDisplay = true }
     }
@@ -301,6 +539,8 @@ final class MacSearchField: NSControl, NSTextInputClient {
     var text = "" {
         didSet {
             needsDisplay = true
+            setAccessibilityValue(text)
+            NSAccessibility.post(element: self, notification: .valueChanged)
             onChange?(text)
         }
     }
@@ -361,6 +601,14 @@ final class MacSearchField: NSControl, NSTextInputClient {
 
     override func keyDown(with event: NSEvent) {
         guard isEnabled else { return }
+        if event.keyCode == 48 {
+            if event.modifierFlags.contains(.shift) {
+                window?.selectPreviousKeyView(self)
+            } else {
+                window?.selectNextKeyView(self)
+            }
+            return
+        }
         if hasMarkedText(), inputContext?.handleEvent(event) == true {
             return
         }
@@ -414,7 +662,7 @@ final class MacSearchField: NSControl, NSTextInputClient {
         path.lineWidth = 1
         path.stroke()
 
-        if let icon = MacAssistantUI.symbol("magnifyingglass", pointSize: 13, weight: .medium) {
+        if showsSearchIcon, let icon = MacAssistantUI.symbol("magnifyingglass", pointSize: 13, weight: .medium) {
             let tintedIcon = NSImage(size: icon.size)
             tintedIcon.lockFocus()
             icon.draw(in: NSRect(origin: .zero, size: icon.size), from: .zero, operation: .sourceOver, fraction: 1)
@@ -426,7 +674,10 @@ final class MacSearchField: NSControl, NSTextInputClient {
             tintedIcon.draw(in: iconRect, from: .zero, operation: .sourceOver, fraction: 1)
         }
 
-        let displayText = text + markedText
+        let rawDisplayText = text + markedText
+        let displayText = isSecure && !rawDisplayText.isEmpty
+            ? String(repeating: "•", count: rawDisplayText.count)
+            : rawDisplayText
         let isPlaceholderVisible = displayText.isEmpty
         let value = isPlaceholderVisible ? placeholder : displayText
         let color = (isPlaceholderVisible ? NSColor.secondaryLabelColor : NSColor.labelColor).withAlphaComponent(enabledAlpha)
@@ -435,7 +686,8 @@ final class MacSearchField: NSControl, NSTextInputClient {
             .foregroundColor: color
         ]
         let textSize = (value as NSString).size(withAttributes: attributes)
-        let textRect = NSRect(x: 34, y: floor((bounds.height - textSize.height) / 2), width: bounds.width - 44, height: ceil(textSize.height))
+        let leadingInset: CGFloat = showsSearchIcon ? 34 : 10
+        let textRect = NSRect(x: leadingInset, y: floor((bounds.height - textSize.height) / 2), width: bounds.width - leadingInset - 10, height: ceil(textSize.height))
         if markedText.isEmpty || isPlaceholderVisible {
             value.draw(in: textRect, withAttributes: attributes)
         } else {
@@ -463,6 +715,12 @@ final class MacSearchField: NSControl, NSTextInputClient {
     private func setup() {
         translatesAutoresizingMaskIntoConstraints = false
         heightAnchor.constraint(equalToConstant: 31).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.textField)
+        setAccessibilityLabel("搜索")
+        setAccessibilityHelp("输入文字筛选内容")
+        setAccessibilityValue("")
     }
 
     private func startCaretBlink() {
@@ -580,7 +838,8 @@ final class MacSearchField: NSControl, NSTextInputClient {
         ]
         let measuredText = displayText.isEmpty ? " " : displayText
         let height = ceil((measuredText as NSString).size(withAttributes: attributes).height)
-        let textRect = NSRect(x: 34, y: floor((bounds.height - height) / 2), width: bounds.width - 44, height: height)
+        let leadingInset: CGFloat = showsSearchIcon ? 34 : 10
+        let textRect = NSRect(x: leadingInset, y: floor((bounds.height - height) / 2), width: bounds.width - leadingInset - 10, height: height)
         let width = min((displayText as NSString).size(withAttributes: attributes).width, textRect.width)
         let x = displayText.isEmpty ? textRect.minX : textRect.minX + width + 1
         return NSRect(x: x, y: textRect.minY, width: 1, height: textRect.height)
@@ -623,6 +882,16 @@ final class MacIconButton: NSControl {
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 else {
+            super.keyDown(with: event)
+            return
+        }
+        sendAction(action, to: target)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -673,6 +942,10 @@ final class MacIconButton: NSControl {
     }
 
     func spinOnce(duration: TimeInterval = 0.55, completion: (() -> Void)? = nil) {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            completion?()
+            return
+        }
         spinTimer?.invalidate()
         spinDuration = duration
         spinStartTime = Date.timeIntervalSinceReferenceDate
@@ -736,6 +1009,20 @@ final class MacIconButton: NSControl {
         translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(equalToConstant: 30).isActive = true
         heightAnchor.constraint(equalToConstant: 30).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(Self.accessibleName(for: symbolName))
+        setAccessibilityHelp("按空格键或回车键执行")
+    }
+
+    private static func accessibleName(for symbol: String) -> String {
+        let names = [
+            "trash": "清理", "pin": "固定", "xmark": "关闭", "plus": "添加",
+            "minus": "移除", "arrow.clockwise": "刷新", "ellipsis": "更多操作",
+            "gearshape": "设置", "magnifyingglass": "搜索"
+        ]
+        return names[symbol] ?? symbol.replacingOccurrences(of: ".", with: " ")
     }
 
     private func drawTintedIcon(_ icon: NSImage, in rect: NSRect, tint: NSColor, fraction: CGFloat) {
@@ -765,6 +1052,7 @@ final class MacTextButton: NSControl {
         didSet {
             invalidateIntrinsicContentSize()
             needsDisplay = true
+            setAccessibilityLabel(title)
         }
     }
 
@@ -793,6 +1081,16 @@ final class MacTextButton: NSControl {
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 else {
+            super.keyDown(with: event)
+            return
+        }
+        sendAction(action, to: target)
     }
 
     override var intrinsicContentSize: NSSize {
@@ -892,16 +1190,30 @@ final class MacTextButton: NSControl {
     private func setup() {
         translatesAutoresizingMaskIntoConstraints = false
         heightAnchor.constraint(equalToConstant: 30).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
+        setAccessibilityHelp("按空格键或回车键执行")
     }
 }
 
 final class MacSegmentButton: NSControl {
     var title: String {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            setAccessibilityLabel(title)
+        }
     }
 
     var selected = false {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            setAccessibilityValue(selected)
+            if selected != oldValue {
+                NSAccessibility.post(element: self, notification: .valueChanged)
+            }
+        }
     }
 
     init(title: String) {
@@ -912,6 +1224,16 @@ final class MacSegmentButton: NSControl {
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 else {
+            super.keyDown(with: event)
+            return
+        }
+        sendAction(action, to: target)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -945,6 +1267,11 @@ final class MacSegmentButton: NSControl {
         translatesAutoresizingMaskIntoConstraints = false
         heightAnchor.constraint(equalToConstant: 28).isActive = true
         widthAnchor.constraint(greaterThanOrEqualToConstant: 118).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.radioButton)
+        setAccessibilityLabel(title)
+        setAccessibilityValue(selected)
     }
 }
 
@@ -954,7 +1281,13 @@ final class MacSelectControl: NSControl {
     }
 
     var selectedIndex = 0 {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            setAccessibilityValue(selectedTitle)
+            if selectedIndex != oldValue {
+                NSAccessibility.post(element: self, notification: .valueChanged)
+            }
+        }
     }
 
     var selectedTitle: String {
@@ -976,6 +1309,17 @@ final class MacSelectControl: NSControl {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setup()
+    }
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 125 else {
+            super.keyDown(with: event)
+            return
+        }
+        guard !items.isEmpty else { return }
+        showMenu()
     }
 
     func select(title: String) {
@@ -1025,6 +1369,12 @@ final class MacSelectControl: NSControl {
         translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
         heightAnchor.constraint(equalToConstant: 30).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.popUpButton)
+        setAccessibilityLabel("选择")
+        setAccessibilityHelp("按空格键、回车键或下箭头打开选项")
+        setAccessibilityValue(selectedTitle)
     }
 
     private func showMenu() {
@@ -1103,10 +1453,22 @@ private final class MacSelectMenuItemControl: NSControl {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         heightAnchor.constraint(equalToConstant: 28).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.menuItem)
+        setAccessibilityLabel(title)
+        setAccessibilityValue(selected)
     }
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 { onSelect() }
+        else { super.keyDown(with: event) }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1157,7 +1519,11 @@ final class MacNumberControl: NSControl {
         didSet {
             value = min(maxValue, max(minValue, value))
             needsDisplay = true
-            if oldValue != value { onChange?(value) }
+            setAccessibilityValue(value)
+            if oldValue != value {
+                NSAccessibility.post(element: self, notification: .valueChanged)
+                onChange?(value)
+            }
         }
     }
 
@@ -1268,6 +1634,12 @@ final class MacNumberControl: NSControl {
         translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(equalToConstant: 84).isActive = true
         heightAnchor.constraint(equalToConstant: 30).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.incrementor)
+        setAccessibilityLabel("数字输入")
+        setAccessibilityHelp("输入数字，或用上下箭头调整")
+        setAccessibilityValue(value)
     }
 
     private func startCaretBlink() {
@@ -1286,5 +1658,113 @@ final class MacNumberControl: NSControl {
         caretTimer?.invalidate()
         caretTimer = nil
         showsCaret = false
+    }
+}
+
+final class MacSliderControl: NSControl {
+    var minValue: Double = 0 { didSet { value = max(value, minValue); needsDisplay = true } }
+    var maxValue: Double = 100 { didSet { value = min(value, maxValue); needsDisplay = true } }
+    var value: Double = 0 {
+        didSet {
+            value = min(maxValue, max(minValue, value))
+            needsDisplay = true
+            setAccessibilityValue(value)
+            if value != oldValue { NSAccessibility.post(element: self, notification: .valueChanged) }
+        }
+    }
+    override var integerValue: Int {
+        get { Int(value.rounded()) }
+        set { value = Double(newValue) }
+    }
+    var increment: Double = 1
+    private var isDragging = false
+
+    convenience init(value: Double, minValue: Double, maxValue: Double, target: AnyObject?, action: Selector?) {
+        self.init(frame: .zero)
+        self.minValue = minValue
+        self.maxValue = maxValue
+        self.value = value
+        self.target = target
+        self.action = action
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 180, height: 28) }
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        window?.makeFirstResponder(self)
+        isDragging = true
+        updateValue(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isDragging else { return }
+        updateValue(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isDragging else { return }
+        updateValue(with: event)
+        isDragging = false
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123, 125: value -= increment
+        case 124, 126: value += increment
+        default:
+            super.keyDown(with: event)
+            return
+        }
+        sendAction(action, to: target)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let trackRect = NSRect(x: 7, y: bounds.midY - 2, width: max(1, bounds.width - 14), height: 4)
+        let track = NSBezierPath(roundedRect: trackRect, xRadius: 2, yRadius: 2)
+        NSColor.separatorColor.withAlphaComponent(isEnabled ? 0.5 : 0.25).setFill()
+        track.fill()
+        let progress = maxValue == minValue ? 0 : CGFloat((value - minValue) / (maxValue - minValue))
+        let fillRect = NSRect(x: trackRect.minX, y: trackRect.minY, width: trackRect.width * progress, height: trackRect.height)
+        MacAssistantUI.Color.blue.withAlphaComponent(isEnabled ? 0.9 : 0.35).setFill()
+        NSBezierPath(roundedRect: fillRect, xRadius: 2, yRadius: 2).fill()
+        let knobCenter = NSPoint(x: trackRect.minX + trackRect.width * progress, y: bounds.midY)
+        let knobRect = NSRect(x: knobCenter.x - 7, y: knobCenter.y - 7, width: 14, height: 14)
+        NSColor.white.withAlphaComponent(isEnabled ? 1 : 0.6).setFill()
+        NSBezierPath(ovalIn: knobRect).fill()
+        MacAssistantUI.Color.blue.withAlphaComponent(isEnabled ? 0.85 : 0.35).setStroke()
+        let outline = NSBezierPath(ovalIn: knobRect.insetBy(dx: 0.5, dy: 0.5))
+        outline.lineWidth = 1
+        outline.stroke()
+    }
+
+    private func setup() {
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 28).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.slider)
+        setAccessibilityLabel("滑块")
+        setAccessibilityHelp("使用左右或上下箭头调整")
+        setAccessibilityValue(value)
+    }
+
+    private func updateValue(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let fraction = min(1, max(0, (point.x - 7) / max(1, bounds.width - 14)))
+        value = minValue + Double(fraction) * (maxValue - minValue)
+        sendAction(action, to: target)
     }
 }

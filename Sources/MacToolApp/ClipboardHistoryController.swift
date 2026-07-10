@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import ImageIO
+import MacToolCore
 
 enum ClipboardPasteMode {
     case formatted
@@ -35,6 +36,7 @@ final class ClipboardHistoryController {
     private var hotKeyManager: GlobalHotKeyManager?
     private var targetApplication: NSRunningApplication?
     private var windowController: ClipboardHistoryWindowController?
+    private var searchGeneration = 0
 
     private(set) var history: [ClipboardHistoryItem] = [] {
         didSet {
@@ -60,7 +62,7 @@ final class ClipboardHistoryController {
     }
 
     func start() {
-        guard store.clipboard.enabled else {
+        guard store.backgroundTasksAllowed, store.clipboard.enabled else {
             hotKeyManager?.unregister()
             return
         }
@@ -91,7 +93,7 @@ final class ClipboardHistoryController {
         hotKeyManager?.unregister()
         timer?.invalidate()
         timer = nil
-        guard store.clipboard.enabled else {
+        guard store.backgroundTasksAllowed, store.clipboard.enabled else {
             return
         }
         configureHotKey()
@@ -197,9 +199,69 @@ final class ClipboardHistoryController {
                 limit: resolvedLimit
             )
         } catch {
-            AppLogger.shared.error("剪切板搜索失败：\(error.localizedDescription)")
+            AppLogger.shared.error("剪贴板搜索失败：\(error.localizedDescription)")
             return []
         }
+    }
+
+    func searchHistoryAsync(
+        _ query: String,
+        applicationKey: String? = nil,
+        favoritesOnly: Bool = false,
+        limit: Int? = nil,
+        completion: @escaping ([ClipboardHistoryItem]) -> Void
+    ) {
+        searchGeneration += 1
+        let generation = searchGeneration
+        let resolvedLimit = limit ?? store.clipboard.maxHistoryCount
+        processingQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, generation == self.searchGeneration else { return }
+            let result: [ClipboardHistoryItem]
+            do {
+                result = try self.historyStore.search(
+                    query,
+                    filter: ClipboardHistorySearchFilter(
+                        applicationKey: applicationKey,
+                        favoritesOnly: favoritesOnly
+                    ),
+                    limit: resolvedLimit
+                )
+            } catch {
+                AppLogger.shared.error("剪贴板后台搜索失败：\(error.localizedDescription)")
+                result = []
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, generation == self.searchGeneration else { return }
+                completion(result)
+            }
+        }
+    }
+
+    var encryptionStatus: String { historyStore.encryptionStatus }
+    var storageSize: Int64 { historyStore.storageSize() }
+    var dataLocation: String { AppPaths.clipboardDirectory.path }
+
+    func retryEncryptionAccess() {
+        do {
+            try historyStore.retryKeyAccess()
+            hasLoadedHistory = false
+            loadHistoryIfNeeded()
+        } catch {
+            AppLogger.shared.error("重试访问剪贴板密钥失败：\(error.localizedDescription)")
+        }
+    }
+
+    func clearUndecryptableHistory() {
+        do {
+            try historyStore.clearUndecryptableHistory()
+            history = []
+        } catch {
+            AppLogger.shared.error("清空无法解密的历史失败：\(error.localizedDescription)")
+        }
+    }
+
+    func panelDidClose() {
+        historyStore.clearThumbnailCache()
     }
 
     func storedTypes(for item: ClipboardHistoryItem) -> [ClipboardStoredType] {
@@ -207,7 +269,7 @@ final class ClipboardHistoryController {
             let storedTypes = try historyStore.loadStoredTypes(itemID: item.id)
             return storedTypes.isEmpty ? item.storedTypes : storedTypes
         } catch {
-            AppLogger.shared.error("剪切板内容读取失败：\(error.localizedDescription)")
+            AppLogger.shared.error("剪贴板内容读取失败：\(error.localizedDescription)")
             return item.storedTypes
         }
     }
@@ -223,7 +285,7 @@ final class ClipboardHistoryController {
             do {
                 url = try self.historyStore.ensureThumbnail(for: item.id)
             } catch {
-                AppLogger.shared.error("剪切板缩略图生成失败：\(error.localizedDescription)")
+                AppLogger.shared.error("剪贴板缩略图生成失败：\(error.localizedDescription)")
                 url = nil
             }
             DispatchQueue.main.async {
@@ -254,7 +316,7 @@ final class ClipboardHistoryController {
     }
 
     private func pollPasteboard() {
-        guard store.clipboard.enabled, pasteboard.changeCount != lastChangeCount else { return }
+        guard store.backgroundTasksAllowed, store.clipboard.enabled, pasteboard.changeCount != lastChangeCount else { return }
         guard hasLoadedHistory else {
             loadHistoryIfNeeded()
             return
@@ -276,7 +338,7 @@ final class ClipboardHistoryController {
             do {
                 updatedHistory = try self.historyStore.insert(item, maxHistoryCount: maxHistoryCount, retentionDays: retentionDays)
             } catch {
-                AppLogger.shared.error("剪切板历史写入失败：\(error.localizedDescription)")
+                AppLogger.shared.error("剪贴板历史写入失败：\(error.localizedDescription)")
                 return
             }
 
@@ -307,6 +369,11 @@ final class ClipboardHistoryController {
 
     private func capturePasteboardItem(sourceApp: NSRunningApplication?) -> CapturedPasteboardItem? {
         guard let pasteboardItem = pasteboard.pasteboardItems?.first else { return nil }
+        let typeNames = Set(pasteboardItem.types.map(\.rawValue))
+        guard !Self.containsSensitiveMarker(Array(typeNames)) else {
+            AppLogger.shared.info("已跳过带敏感标记的剪贴板内容。")
+            return nil
+        }
         let storedTypes = pasteboardItem.types.compactMap { type -> ClipboardStoredType? in
             guard let data = pasteboardItem.data(forType: type), data.count <= 2_000_000 else { return nil }
             return ClipboardStoredType(type: type.rawValue, data: data)
@@ -320,6 +387,10 @@ final class ClipboardHistoryController {
             plainText: plainText,
             storedTypes: storedTypes
         )
+    }
+
+    static func containsSensitiveMarker(_ rawTypes: [String]) -> Bool {
+        ClipboardPrivacyPolicy.containsSensitiveMarker(rawTypes)
     }
 
     private func makeHistoryItem(from capturedItem: CapturedPasteboardItem) -> ClipboardHistoryItem? {
@@ -586,7 +657,7 @@ final class ClipboardHistoryController {
             do {
                 loaded = try self.historyStore.loadHistory(maxHistoryCount: maxHistoryCount, retentionDays: retentionDays)
             } catch {
-                AppLogger.shared.error("剪切板历史加载失败：\(error.localizedDescription)")
+                AppLogger.shared.error("剪贴板历史加载失败：\(error.localizedDescription)")
                 loaded = []
             }
 
@@ -609,7 +680,7 @@ final class ClipboardHistoryController {
             do {
                 updatedHistory = try operation(self.historyStore)
             } catch {
-                AppLogger.shared.error("剪切板历史更新失败：\(error.localizedDescription)")
+                AppLogger.shared.error("剪贴板历史更新失败：\(error.localizedDescription)")
                 return
             }
             DispatchQueue.main.async { [weak self] in
@@ -627,7 +698,7 @@ final class ClipboardHistoryController {
             do {
                 loaded = try self.historyStore.loadHistory(maxHistoryCount: maxHistoryCount, retentionDays: retentionDays)
             } catch {
-                AppLogger.shared.error("剪切板历史刷新失败：\(error.localizedDescription)")
+                AppLogger.shared.error("剪贴板历史刷新失败：\(error.localizedDescription)")
                 return
             }
             DispatchQueue.main.async { [weak self] in
