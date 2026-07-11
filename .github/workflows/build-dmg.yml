@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -43,7 +43,32 @@ jobs:
           fi
           echo "APP_BUILD_VERSION=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
 
+      - name: Select signed DMG source
+        id: dmg_source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MACOS_KEYCHAIN_BASE64: ${{ secrets.MACOS_KEYCHAIN_BASE64 }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          if [[ -n "$MACOS_KEYCHAIN_BASE64" && -n "$MACOS_KEYCHAIN_PASSWORD" ]]; then
+            echo "mode=build" >> "$GITHUB_OUTPUT"
+            echo "A signing keychain is configured; building the DMG on the runner."
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]] && gh release view "$APP_VERSION" >/dev/null 2>&1; then
+            mkdir -p "$PWD/.build"
+            gh release download "$APP_VERSION" \
+              --pattern "MacTool.dmg" \
+              --dir "$PWD/.build" \
+              --clobber
+            test -f "$PWD/.build/MacTool.dmg"
+            echo "mode=prebuilt" >> "$GITHUB_OUTPUT"
+            echo "Using the locally signed DMG from the draft GitHub Release."
+          else
+            echo "Formal release requires either signing-keychain secrets or a pre-signed MacTool.dmg in the tag's draft Release." >&2
+            exit 1
+          fi
+
       - name: Install signing keychain
+        if: steps.dmg_source.outputs.mode == 'build'
         env:
           MACOS_KEYCHAIN_BASE64: ${{ secrets.MACOS_KEYCHAIN_BASE64 }}
           MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
@@ -82,23 +107,62 @@ jobs:
           echo "Using code signing identity: $MACOS_CODESIGN_IDENTITY"
 
       - name: Build DMG
+        if: steps.dmg_source.outputs.mode == 'build'
         env:
           DMG_NAME: "MacTool.dmg"
         run: scripts/build_dmg.sh
 
       - name: Verify release artifact
+        if: steps.dmg_source.outputs.mode == 'build'
         run: |
           app='.build/Mac助手.app'
           test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
           test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
           codesign --verify --deep --strict "$app"
           codesign --verify '.build/MacTool.dmg'
-          codesign -d --verbose=4 "$app" 2>&1 | rg -F "Authority=$CODESIGN_IDENTITY"
-          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | rg -F "Authority=$CODESIGN_IDENTITY"
-          codesign -d --verbose=4 "$app" 2>&1 | rg 'flags=.*runtime'
+          codesign -d --verbose=4 "$app" 2>&1 | grep -F "Authority=$CODESIGN_IDENTITY"
+          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | grep -F "Authority=$CODESIGN_IDENTITY"
+          codesign -d --verbose=4 "$app" 2>&1 | grep -E 'flags=.*runtime'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "$APP_BUILD_VERSION"
           test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
-          if rg -a -n '/Users/[^/]+/' "$app"; then
+          if grep -aR -n -E '/Users/[^/]+/' "$app"; then
+            echo "Packaged app contains a user-specific absolute path" >&2
+            exit 1
+          fi
+
+      - name: Resolve Sparkle tools for prebuilt DMG
+        if: steps.dmg_source.outputs.mode == 'prebuilt'
+        run: swift package resolve
+
+      - name: Verify prebuilt signed release artifact
+        if: steps.dmg_source.outputs.mode == 'prebuilt'
+        run: |
+          dmg="$PWD/.build/MacTool.dmg"
+          mount_dir="$RUNNER_TEMP/mac-tool-dmg"
+          mkdir -p "$mount_dir"
+          hdiutil verify "$dmg"
+          codesign --verify --strict "$dmg"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_dir"
+          cleanup() {
+            hdiutil detach "$mount_dir" >/dev/null
+          }
+          trap cleanup EXIT
+
+          app="$mount_dir/Mac助手.app"
+          test -d "$app"
+          test -L "$mount_dir/Applications"
+          test "$(readlink "$mount_dir/Applications")" = "/Applications"
+          test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
+          test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
+          codesign --verify --deep --strict "$app"
+          codesign -d --verbose=4 "$app" 2>&1 | grep -E 'flags=.*runtime'
+          codesign -d --verbose=4 "$app" 2>&1 | grep -F 'TeamIdentifier=6N8KQ247WZ'
+          codesign -d --verbose=4 "$app/Contents/PlugIns/mac-tool-finder-sync.appex" 2>&1 | grep -F 'TeamIdentifier=6N8KQ247WZ'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$APP_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "$APP_BUILD_VERSION"
+          test -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")"
+          if grep -aR -n -E '/Users/[^/]+/' "$app"; then
             echo "Packaged app contains a user-specific absolute path" >&2
             exit 1
           fi
@@ -115,7 +179,7 @@ jobs:
           echo "Found DMG: $dmg_path"
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: MacAssistant-DMG
           path: ${{ steps.dmg.outputs.path }}
@@ -164,13 +228,13 @@ jobs:
             "$appcast_dir"
 
           test -f "$appcast_dir/appcast.xml"
-          rg -q 'sparkle:edSignature=' "$appcast_dir/appcast.xml"
+          grep -q 'sparkle:edSignature=' "$appcast_dir/appcast.xml"
           mkdir -p "$PWD/.build/pages"
           cp "$appcast_dir/appcast.xml" "$PWD/.build/pages/appcast.xml"
 
       - name: Upload GitHub Pages artifact
         if: github.ref_type == 'tag'
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: sparkle-appcast-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/pages
@@ -178,6 +242,6 @@ jobs:
       - name: Deploy Sparkle appcast to GitHub Pages
         id: deployment
         if: github.ref_type == 'tag'
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
         with:
           artifact_name: sparkle-appcast-${{ github.run_id }}-${{ github.run_attempt }}
