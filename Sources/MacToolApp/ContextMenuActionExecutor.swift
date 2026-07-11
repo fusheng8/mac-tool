@@ -33,7 +33,19 @@ final class ContextMenuActionExecutor {
         self.archiveCancellation = archiveCancellation
     }
 
-    func perform(itemID: ContextMenuItemID, urls: [URL]) throws {
+    func perform(
+        itemID: ContextMenuItemID,
+        urls: [URL],
+        targetApplication: FinderTargetApplication? = nil
+    ) throws {
+        if itemID.supportsCustomTargetApplication, let targetApplication {
+            try openWithCustomTarget(
+                urls: urls,
+                target: targetApplication,
+                opensDirectory: itemID == .openInTerminal || itemID == .openInWarp
+            )
+            return
+        }
         switch itemID {
         case .createFolder:
             try createFolder(in: targetDirectory(from: urls))
@@ -175,6 +187,35 @@ final class ContextMenuActionExecutor {
         guard let url = components.url, NSWorkspace.shared.open(url) else {
             throw ContextMenuActionError.applicationNotFound(ExternalApp.warp.displayName)
         }
+    }
+
+    private func openWithCustomTarget(
+        urls: [URL],
+        target: FinderTargetApplication,
+        opensDirectory: Bool
+    ) throws {
+        let appURL: URL?
+        if !target.bundleIdentifier.isEmpty,
+           let resolved = NSWorkspace.shared.urlForApplication(withBundleIdentifier: target.bundleIdentifier) {
+            appURL = resolved
+        } else if !target.lastKnownPath.isEmpty,
+                  FileManager.default.fileExists(atPath: target.lastKnownPath) {
+            appURL = URL(fileURLWithPath: target.lastKnownPath)
+        } else {
+            appURL = nil
+        }
+        guard let appURL else {
+            throw ContextMenuActionError.applicationNotFound(
+                target.displayName.isEmpty ? target.bundleIdentifier : target.displayName
+            )
+        }
+        let targets: [URL]
+        if opensDirectory {
+            targets = [try targetDirectory(from: urls)]
+        } else {
+            targets = urls.isEmpty ? [FileManager.default.homeDirectoryForCurrentUser] : urls
+        }
+        NSWorkspace.shared.open(targets, withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
     }
 
     private func uniqueURL(in directory: URL, baseName: String, extension fileExtension: String?) -> URL {

@@ -58,6 +58,64 @@ struct PortUsage: Hashable, Identifiable {
     }
 }
 
+struct PortProcessGroup: Hashable, Identifiable {
+    let pid: Int32
+    let usages: [PortUsage]
+
+    var id: String {
+        "\(pid)-\(primaryUsage.executablePath)-\(primaryUsage.command)"
+    }
+
+    var primaryUsage: PortUsage {
+        usages[0]
+    }
+
+    var displayName: String { primaryUsage.displayName }
+    var displayPath: String { primaryUsage.displayPath }
+    var ports: [Int] { Array(Set(usages.map(\.port))).sorted() }
+    var protocols: [String] { Array(Set(usages.map(\.protocolName))).sorted() }
+    var endpoints: [String] { Array(Set(usages.map(\.endpoint))).sorted() }
+    var addressScope: PortAddressScope {
+        usages.contains(where: { $0.addressScope == .network }) ? .network : .loopback
+    }
+
+    static func grouped(_ usages: [PortUsage]) -> [PortProcessGroup] {
+        Dictionary(grouping: usages, by: \.pid)
+            .map { pid, values in
+                PortProcessGroup(
+                    pid: pid,
+                    usages: values.sorted {
+                        if $0.port != $1.port { return $0.port < $1.port }
+                        if $0.protocolName != $1.protocolName { return $0.protocolName < $1.protocolName }
+                        return $0.endpoint < $1.endpoint
+                    }
+                )
+            }
+            .sorted {
+                let nameOrder = $0.displayName.localizedStandardCompare($1.displayName)
+                if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                return $0.pid < $1.pid
+            }
+    }
+
+    func matches(_ query: String) -> Bool {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return true }
+        let values = [
+            displayName,
+            displayPath,
+            primaryUsage.command,
+            primaryUsage.user,
+            "\(pid)",
+            ports.map(String.init).joined(separator: " "),
+            protocols.joined(separator: " "),
+            endpoints.joined(separator: " "),
+            addressScope.displayName
+        ]
+        return values.contains { $0.lowercased().contains(normalized) }
+    }
+}
+
 enum PortAddressScope: String, CaseIterable {
     case loopback
     case network

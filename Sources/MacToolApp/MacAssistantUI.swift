@@ -1,6 +1,13 @@
 import AppKit
 
 enum MacAssistantUI {
+    enum Metrics {
+        static let spacing: CGFloat = 8
+        static let contentInset: CGFloat = 24
+        static let cornerRadius: CGFloat = 11
+        static let compactCornerRadius: CGFloat = 8
+    }
+
     enum Color {
         static var window: NSColor {
             dynamic(
@@ -19,8 +26,36 @@ enum MacAssistantUI {
         static var sidebarSelected: NSColor {
             let alpha: CGFloat = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.95 : 0.78
             return dynamic(
-                light: NSColor(calibratedRed: 0.80, green: 0.86, blue: 0.98, alpha: alpha),
-                dark: NSColor(calibratedRed: 0.19, green: 0.29, blue: 0.46, alpha: alpha)
+                light: NSColor(calibratedRed: 0.84, green: 0.89, blue: 0.98, alpha: alpha),
+                dark: NSColor(calibratedRed: 0.18, green: 0.27, blue: 0.42, alpha: alpha)
+            )
+        }
+
+        static var content: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.985, green: 0.988, blue: 0.995, alpha: 1),
+                dark: NSColor(calibratedRed: 0.115, green: 0.12, blue: 0.14, alpha: 1)
+            )
+        }
+
+        static var brandTint: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.94, green: 0.965, blue: 1, alpha: 0.96),
+                dark: NSColor(calibratedRed: 0.14, green: 0.20, blue: 0.30, alpha: 0.96)
+            )
+        }
+
+        static var brandBorder: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.68, green: 0.79, blue: 0.97, alpha: 0.76),
+                dark: NSColor(calibratedRed: 0.29, green: 0.45, blue: 0.68, alpha: 0.90)
+            )
+        }
+
+        static var controlSurface: NSColor {
+            dynamic(
+                light: NSColor(calibratedWhite: 0.975, alpha: 0.96),
+                dark: NSColor(calibratedWhite: 0.19, alpha: 0.96)
             )
         }
 
@@ -49,10 +84,18 @@ enum MacAssistantUI {
         }
         static let mutedText = NSColor.secondaryLabelColor
         static let subtleText = NSColor.tertiaryLabelColor
-        static let blue = NSColor.systemBlue
+        static var blue: NSColor {
+            dynamic(
+                light: NSColor(calibratedRed: 0.16, green: 0.43, blue: 0.88, alpha: 1),
+                dark: NSColor(calibratedRed: 0.38, green: 0.62, blue: 1, alpha: 1)
+            )
+        }
         static let amber = NSColor.systemOrange
         static let purple = NSColor.systemPurple
         static let green = NSColor.systemGreen
+        static let statusGood = NSColor.systemGreen
+        static let statusAttention = NSColor.systemOrange
+        static let statusCritical = NSColor.systemRed
 
         private static func dynamic(light: NSColor, dark: NSColor) -> NSColor {
             NSColor(name: nil) { appearance in
@@ -130,6 +173,230 @@ final class LayerBackedView: NSView {
             layer?.backgroundColor = storedBackgroundColor.cgColor
             layer?.borderColor = storedBorderColor?.cgColor
         }
+    }
+}
+
+final class MacStatusDotView: NSView {
+    var level: ControlCenterStatusLevel {
+        didSet {
+            needsDisplay = true
+            updateAccessibilityValue()
+        }
+    }
+
+    init(level: ControlCenterStatusLevel) {
+        self.level = level
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 10).isActive = true
+        heightAnchor.constraint(equalToConstant: 10).isActive = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        updateAccessibilityValue()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("未实现 init(coder:)")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let color: NSColor
+        switch level {
+        case .normal: color = MacAssistantUI.Color.statusGood
+        case .attention: color = MacAssistantUI.Color.statusAttention
+        case .critical: color = MacAssistantUI.Color.statusCritical
+        }
+        color.setFill()
+        NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1)).fill()
+    }
+
+    private func updateAccessibilityValue() {
+        switch level {
+        case .normal: setAccessibilityValue("正常")
+        case .attention: setAccessibilityValue("需要处理")
+        case .critical: setAccessibilityValue("严重")
+        }
+    }
+}
+
+final class MacDisclosureSection: NSView {
+    private let box = LayerBackedView(
+        backgroundColor: MacAssistantUI.Color.card,
+        cornerRadius: MacAssistantUI.Metrics.cornerRadius,
+        borderColor: MacAssistantUI.Color.hairline,
+        borderWidth: 1
+    )
+    private let header: MacDisclosureHeaderControl
+    private let contentContainer = NSView()
+    private let stack = NSStackView()
+
+    private(set) var isExpanded = false
+
+    init(title: String, detail: String, symbolName: String) {
+        header = MacDisclosureHeaderControl(title: title, detail: detail, symbolName: symbolName)
+        super.init(frame: .zero)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("未实现 init(coder:)")
+    }
+
+    func setContent(_ content: NSView) {
+        contentContainer.subviews.forEach { $0.removeFromSuperview() }
+        content.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 18),
+            content.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -18),
+            content.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 4),
+            content.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -18)
+        ])
+    }
+
+    func setExpanded(_ expanded: Bool, animated: Bool = true) {
+        guard expanded != isExpanded else { return }
+        isExpanded = expanded
+        header.setExpanded(expanded)
+        let changes = { self.contentContainer.isHidden = !expanded }
+        if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.allowsImplicitAnimation = true
+                changes()
+                self.layoutSubtreeIfNeeded()
+            }
+        } else {
+            changes()
+        }
+    }
+
+    private func setup() {
+        translatesAutoresizingMaskIntoConstraints = false
+        box.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(box)
+
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.detachesHiddenViews = true
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(stack)
+
+        header.target = self
+        header.action = #selector(toggleDisclosure)
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.isHidden = true
+        stack.addArrangedSubview(header)
+        stack.addArrangedSubview(contentContainer)
+
+        NSLayoutConstraint.activate([
+            box.leadingAnchor.constraint(equalTo: leadingAnchor),
+            box.trailingAnchor.constraint(equalTo: trailingAnchor),
+            box.topAnchor.constraint(equalTo: topAnchor),
+            box.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: box.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: box.bottomAnchor),
+            header.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            contentContainer.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        ])
+    }
+
+    @objc private func toggleDisclosure() {
+        setExpanded(!isExpanded)
+    }
+}
+
+private final class MacDisclosureHeaderControl: NSControl {
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+    private let chevronView = NSImageView()
+
+    init(title: String, detail: String, symbolName: String) {
+        super.init(frame: .zero)
+        setup(title: title, detail: detail, symbolName: symbolName)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("未实现 init(coder:)")
+    }
+
+    override var acceptsFirstResponder: Bool { isEnabled }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        sendAction(action, to: target)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76 else {
+            super.keyDown(with: event)
+            return
+        }
+        sendAction(action, to: target)
+    }
+
+    func setExpanded(_ expanded: Bool) {
+        chevronView.image = MacAssistantUI.symbol(expanded ? "chevron.up" : "chevron.down", pointSize: 11, weight: .semibold)
+        setAccessibilityValue(expanded)
+        NSAccessibility.post(element: self, notification: .valueChanged)
+    }
+
+    private func setup(title: String, detail: String, symbolName: String) {
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 64).isActive = true
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.disclosureTriangle)
+        setAccessibilityLabel(title)
+        setAccessibilityHelp("展开或收起(title)")
+        setAccessibilityValue(false)
+
+        iconView.image = MacAssistantUI.symbol(symbolName, pointSize: 18, weight: .regular)
+        iconView.contentTintColor = .labelColor
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.stringValue = title
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        detailLabel.stringValue = detail
+        detailLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let text = NSStackView(views: [titleLabel, detailLabel])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 4
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        chevronView.image = MacAssistantUI.symbol("chevron.down", pointSize: 11, weight: .semibold)
+        chevronView.contentTintColor = .secondaryLabelColor
+        chevronView.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(iconView)
+        addSubview(text)
+        addSubview(chevronView)
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 22),
+            iconView.heightAnchor.constraint(equalToConstant: 22),
+            text.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 14),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: chevronView.leadingAnchor, constant: -16),
+            chevronView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            chevronView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            chevronView.widthAnchor.constraint(equalToConstant: 14),
+            chevronView.heightAnchor.constraint(equalToConstant: 14)
+        ])
     }
 }
 
@@ -462,6 +729,8 @@ final class SidebarNavItem: NSControl {
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let normalTint = NSColor.secondaryLabelColor
+    private var selectedState = false
+    private var selectedAccent = MacAssistantUI.Color.blue
 
     init(title: String, symbolName: String) {
         super.init(frame: .zero)
@@ -487,10 +756,23 @@ final class SidebarNavItem: NSControl {
     }
 
     func setSelected(_ selected: Bool, accentColor: NSColor) {
-        layer?.backgroundColor = selected ? MacAssistantUI.Color.sidebarSelected.cgColor : NSColor.clear.cgColor
-        iconView.contentTintColor = accentColor
-        titleLabel.textColor = selected ? MacAssistantUI.Color.blue : normalTint
-        titleLabel.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .medium)
+        selectedState = selected
+        selectedAccent = accentColor
+        updateAppearance()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = selectedState ? MacAssistantUI.Color.sidebarSelected.cgColor : NSColor.clear.cgColor
+            iconView.contentTintColor = selectedState ? selectedAccent : normalTint
+            titleLabel.textColor = selectedState ? MacAssistantUI.Color.blue : normalTint
+            titleLabel.font = .systemFont(ofSize: 13, weight: selectedState ? .semibold : .medium)
+        }
     }
 
     private func setup(title: String, symbolName: String) {
@@ -578,6 +860,11 @@ final class MacSearchField: NSControl, NSTextInputClient {
         caretTimer?.invalidate()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     override func becomeFirstResponder() -> Bool {
         isFocused = true
         startCaretBlink()
@@ -650,15 +937,22 @@ final class MacSearchField: NSControl, NSTextInputClient {
         return true
     }
 
+    func clearText() {
+        markedText = ""
+        markedSelectedRange = NSRange(location: 0, length: 0)
+        inputContext?.discardMarkedText()
+        text = ""
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
         let enabledAlpha: CGFloat = isEnabled ? 1 : 0.42
-        NSColor.white.withAlphaComponent(0.70 * enabledAlpha).setFill()
+        MacAssistantUI.Color.controlSurface.withAlphaComponent(enabledAlpha).setFill()
         path.fill()
-        (isFocused ? MacAssistantUI.Color.blue.withAlphaComponent(0.70) : NSColor(calibratedRed: 0.66, green: 0.69, blue: 0.74, alpha: 0.86 * enabledAlpha)).setStroke()
+        (isFocused ? MacAssistantUI.Color.blue.withAlphaComponent(0.70) : MacAssistantUI.Color.hairline.withAlphaComponent(enabledAlpha)).setStroke()
         path.lineWidth = 1
         path.stroke()
 
@@ -982,7 +1276,7 @@ final class MacIconButton: NSControl {
         let chrome = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7)
         switch style {
         case .filled:
-            (isPressed ? MacAssistantUI.Color.blue.withAlphaComponent(0.13) : NSColor.white.withAlphaComponent(0.78)).setFill()
+            (isPressed ? MacAssistantUI.Color.blue.withAlphaComponent(0.13) : MacAssistantUI.Color.controlSurface).setFill()
             chrome.fill()
             MacAssistantUI.Color.hairline.withAlphaComponent(isEnabled ? 1 : 0.45).setStroke()
             chrome.lineWidth = 1
@@ -1137,7 +1431,7 @@ final class MacTextButton: NSControl {
 
         switch role {
         case .neutral:
-            (isPressed ? tint.withAlphaComponent(0.12) : NSColor.white.withAlphaComponent(0.84 * enabledAlpha)).setFill()
+            (isPressed ? tint.withAlphaComponent(0.12) : MacAssistantUI.Color.controlSurface.withAlphaComponent(enabledAlpha)).setFill()
         case .primary, .destructive:
             (isPressed ? tint.withAlphaComponent(0.22) : tint.withAlphaComponent(0.11 * enabledAlpha)).setFill()
         }
@@ -1244,7 +1538,7 @@ final class MacSegmentButton: NSControl {
         super.draw(dirtyRect)
         if selected {
             let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-            NSColor.white.setFill()
+            MacAssistantUI.Color.controlSurface.setFill()
             path.fill()
         }
 
@@ -1336,7 +1630,7 @@ final class MacSelectControl: NSControl {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-        NSColor.white.withAlphaComponent(isEnabled ? 0.85 : 0.45).setFill()
+        MacAssistantUI.Color.controlSurface.withAlphaComponent(isEnabled ? 1 : 0.45).setFill()
         path.fill()
         MacAssistantUI.Color.hairline.withAlphaComponent(isEnabled ? 1 : 0.45).setStroke()
         path.lineWidth = 1
