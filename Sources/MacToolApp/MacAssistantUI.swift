@@ -650,6 +650,13 @@ final class MacSearchField: NSControl, NSTextInputClient {
         return true
     }
 
+    func clearText() {
+        markedText = ""
+        markedSelectedRange = NSRange(location: 0, length: 0)
+        inputContext?.discardMarkedText()
+        text = ""
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
