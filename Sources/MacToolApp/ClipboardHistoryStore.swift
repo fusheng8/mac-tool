@@ -36,6 +36,12 @@ final class ClipboardHistoryStore: @unchecked Sendable {
     private let jsonDecoder = JSONDecoder()
     private(set) var initializationError: Error?
 
+    private final class FileMutationJournal {
+        var createdBlobDirectories: [URL] = []
+        var deletedBlobDirectories: Set<URL> = []
+        var deletedItemIDs: Set<String> = []
+    }
+
     var encryptionStatus: String {
         if let initializationError { return "已暂停 · \(initializationError.localizedDescription)" }
         return crypto?.statusDescription ?? "已暂停"
@@ -148,6 +154,7 @@ final class ClipboardHistoryStore: @unchecked Sendable {
         _ = try requireCrypto()
         try migrateLegacySQLiteIfNeeded()
         try migrateLegacyJSONIfNeeded()
+        try removeOrphanedBlobDirectories()
         try prune(retentionDays: retentionDays)
         try trim(maxHistoryCount: maxHistoryCount)
         return try fetchItems()
@@ -156,7 +163,7 @@ final class ClipboardHistoryStore: @unchecked Sendable {
     func insert(_ item: ClipboardHistoryItem, maxHistoryCount: Int, retentionDays: Int) throws -> [ClipboardHistoryItem] {
         let crypto = try requireCrypto()
         let databaseQueue = try requireDatabase()
-        try databaseQueue.write { db in
+        try performWrite(databaseQueue: databaseQueue) { db, journal in
             let hash = contentHash(for: item.storedTypes, crypto: crypto)
             let duplicatedFavorite = try Bool.fetchOne(
                 db,
@@ -170,8 +177,8 @@ final class ClipboardHistoryStore: @unchecked Sendable {
                 sql: "SELECT id FROM clipboard_items WHERE contentHash = ?",
                 arguments: [hash]
             )
-            try deleteItems(db, ids: duplicateIDs)
-            try insertItem(db, storedItem, crypto: crypto, contentHash: hash)
+            try deleteItems(db, ids: duplicateIDs, journal: journal)
+            try insertItem(db, storedItem, crypto: crypto, contentHash: hash, journal: journal)
         }
         try prune(retentionDays: retentionDays)
         try trim(maxHistoryCount: maxHistoryCount)
@@ -225,7 +232,9 @@ final class ClipboardHistoryStore: @unchecked Sendable {
     }
 
     func delete(_ itemID: UUID) throws -> [ClipboardHistoryItem] {
-        try requireDatabase().write { db in try deleteItems(db, ids: [itemID.uuidString]) }
+        try performWrite { db, journal in
+            try deleteItems(db, ids: [itemID.uuidString], journal: journal)
+        }
         return try fetchItems()
     }
 
@@ -240,15 +249,19 @@ final class ClipboardHistoryStore: @unchecked Sendable {
     }
 
     func clearUnfavorited() throws -> [ClipboardHistoryItem] {
-        try requireDatabase().write { db in
-            try deleteItems(db, ids: String.fetchAll(db, sql: "SELECT id FROM clipboard_items WHERE isFavorite = 0"))
+        try performWrite { db, journal in
+            try deleteItems(
+                db,
+                ids: String.fetchAll(db, sql: "SELECT id FROM clipboard_items WHERE isFavorite = 0"),
+                journal: journal
+            )
         }
         return try fetchItems()
     }
 
     func clearAll() throws -> [ClipboardHistoryItem] {
-        try requireDatabase().write { db in
-            try deleteItems(db, ids: String.fetchAll(db, sql: "SELECT id FROM clipboard_items"))
+        try performWrite { db, journal in
+            try deleteItems(db, ids: String.fetchAll(db, sql: "SELECT id FROM clipboard_items"), journal: journal)
         }
         clearThumbnailCache()
         return []
@@ -256,7 +269,7 @@ final class ClipboardHistoryStore: @unchecked Sendable {
 
     func clearItems(kind: ClipboardContentKind) throws -> [ClipboardHistoryItem] {
         let ids = try fetchItems().filter { $0.metadata.contentType == kind.title && !$0.isFavorite }.map { $0.id.uuidString }
-        try requireDatabase().write { db in try deleteItems(db, ids: ids) }
+        try performWrite { db, journal in try deleteItems(db, ids: ids, journal: journal) }
         return try fetchItems()
     }
 
@@ -310,18 +323,18 @@ final class ClipboardHistoryStore: @unchecked Sendable {
     private func prune(retentionDays: Int) throws {
         guard retentionDays > 0,
               let cutoff = Calendar.current.date(byAdding: .day, value: -retentionDays, to: Date()) else { return }
-        try requireDatabase().write { db in
+        try performWrite { db, journal in
             let ids = try String.fetchAll(
                 db,
                 sql: "SELECT id FROM clipboard_items WHERE isFavorite = 0 AND sortKey < ?",
                 arguments: [cutoff.timeIntervalSince1970]
             )
-            try deleteItems(db, ids: ids)
+            try deleteItems(db, ids: ids, journal: journal)
         }
     }
 
     private func trim(maxHistoryCount: Int) throws {
-        try requireDatabase().write { db in
+        try performWrite { db, journal in
             let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clipboard_items") ?? 0
             guard count > maxHistoryCount else { return }
             let ids = try String.fetchAll(
@@ -329,7 +342,7 @@ final class ClipboardHistoryStore: @unchecked Sendable {
                 sql: "SELECT id FROM clipboard_items WHERE isFavorite = 0 ORDER BY sortKey ASC LIMIT ?",
                 arguments: [count - maxHistoryCount]
             )
-            try deleteItems(db, ids: ids)
+            try deleteItems(db, ids: ids, journal: journal)
         }
     }
 
@@ -337,7 +350,8 @@ final class ClipboardHistoryStore: @unchecked Sendable {
         _ db: Database,
         _ item: ClipboardHistoryItem,
         crypto: any ClipboardCryptoProviding,
-        contentHash: String
+        contentHash: String,
+        journal: FileMutationJournal
     ) throws {
         let totalBytes = item.storedTypes.reduce(0) { $0 + $1.data.count }
         var metadata = item.metadata
@@ -351,13 +365,20 @@ final class ClipboardHistoryStore: @unchecked Sendable {
             arguments: [item.id.uuidString, item.createdAt.timeIntervalSince1970, item.isFavorite, contentHash, payload, totalBytes]
         )
 
+        let blobFolderName = "object-\(UUID().uuidString)"
+        let blobFolderURL = blobDirectory.appendingPathComponent(blobFolderName, isDirectory: true)
+        var registeredBlobFolder = false
         for (index, storedType) in item.storedTypes.enumerated() {
             let sealed = try crypto.seal(jsonEncoder.encode(storedType))
             let useBlob = storedType.data.count > Constants.inlineDataLimit || Self.isRichOrImageType(storedType.type)
             let fileName: String?
             let inlineData: Data?
             if useBlob {
-                fileName = "\(item.id.uuidString)/\(index).blob"
+                if !registeredBlobFolder {
+                    journal.createdBlobDirectories.append(blobFolderURL)
+                    registeredBlobFolder = true
+                }
+                fileName = "\(blobFolderName)/\(index).blob"
                 inlineData = nil
                 try secureWrite(sealed, to: blobDirectory.appendingPathComponent(fileName!))
             } else {
@@ -371,11 +392,18 @@ final class ClipboardHistoryStore: @unchecked Sendable {
         }
     }
 
-    private func deleteItems(_ db: Database, ids: [String]) throws {
+    private func deleteItems(_ db: Database, ids: [String], journal: FileMutationJournal) throws {
         for id in ids {
-            try? fileManager.removeItem(at: blobDirectory.appendingPathComponent(id, isDirectory: true))
-            try? fileManager.removeItem(at: thumbnailDirectory.appendingPathComponent("\(id).thumb"))
-            try? fileManager.removeItem(at: thumbnailCacheDirectory.appendingPathComponent("\(id).jpg"))
+            let fileNames = try String.fetchAll(
+                db,
+                sql: "SELECT blobFileName FROM clipboard_contents WHERE itemId = ? AND blobFileName IS NOT NULL",
+                arguments: [id]
+            )
+            for fileName in fileNames {
+                guard let directoryName = Self.blobDirectoryName(from: fileName) else { continue }
+                journal.deletedBlobDirectories.insert(blobDirectory.appendingPathComponent(directoryName, isDirectory: true))
+            }
+            journal.deletedItemIDs.insert(id)
             try db.execute(sql: "DELETE FROM clipboard_contents WHERE itemId = ?", arguments: [id])
             try db.execute(sql: "DELETE FROM clipboard_items WHERE id = ?", arguments: [id])
         }
@@ -389,10 +417,16 @@ final class ClipboardHistoryStore: @unchecked Sendable {
         guard let legacyHistoryURL, fileManager.fileExists(atPath: legacyHistoryURL.path) else { return }
         let items = try jsonDecoder.decode([ClipboardHistoryItem].self, from: Data(contentsOf: legacyHistoryURL))
         let crypto = try requireCrypto()
-        try requireDatabase().write { db in
+        try performWrite { db, journal in
             for range in ClipboardPrivacyPolicy.batchRanges(itemCount: items.count) {
                 for item in items[range] {
-                    try insertItem(db, item, crypto: crypto, contentHash: contentHash(for: item.storedTypes, crypto: crypto))
+                    try insertItem(
+                        db,
+                        item,
+                        crypto: crypto,
+                        contentHash: contentHash(for: item.storedTypes, crypto: crypto),
+                        journal: journal
+                    )
                 }
             }
         }
@@ -435,11 +469,21 @@ final class ClipboardHistoryStore: @unchecked Sendable {
         guard !items.isEmpty else { return }
 
         do {
-            try requireDatabase().write { db in
-                try deleteItems(db, ids: String.fetchAll(db, sql: "SELECT id FROM clipboard_items"))
+            try performWrite { db, journal in
+                try deleteItems(
+                    db,
+                    ids: String.fetchAll(db, sql: "SELECT id FROM clipboard_items"),
+                    journal: journal
+                )
                 for range in ClipboardPrivacyPolicy.batchRanges(itemCount: items.count) {
                     for (item, types) in items[range] {
-                        try insertItem(db, item, crypto: crypto, contentHash: contentHash(for: types, crypto: crypto))
+                        try insertItem(
+                            db,
+                            item,
+                            crypto: crypto,
+                            contentHash: contentHash(for: types, crypto: crypto),
+                            journal: journal
+                        )
                     }
                 }
             }
@@ -453,8 +497,12 @@ final class ClipboardHistoryStore: @unchecked Sendable {
                 }
             }
         } catch {
-            try? requireDatabase().write { db in
-                try deleteItems(db, ids: String.fetchAll(db, sql: "SELECT id FROM clipboard_items"))
+            try? performWrite { db, journal in
+                try deleteItems(
+                    db,
+                    ids: String.fetchAll(db, sql: "SELECT id FROM clipboard_items"),
+                    journal: journal
+                )
             }
             throw error
         }
@@ -474,6 +522,63 @@ final class ClipboardHistoryStore: @unchecked Sendable {
     private func requireDatabase() throws -> DatabaseQueue {
         guard let databaseQueue else { throw initializationError ?? ClipboardMigrationError.databaseUnavailable }
         return databaseQueue
+    }
+
+    private func performWrite<T>(
+        databaseQueue: DatabaseQueue? = nil,
+        _ updates: (Database, FileMutationJournal) throws -> T
+    ) throws -> T {
+        let queue = try databaseQueue ?? requireDatabase()
+        let journal = FileMutationJournal()
+        do {
+            let result = try queue.write { db in try updates(db, journal) }
+            cleanupCommittedFileDeletions(journal)
+            return result
+        } catch {
+            for directory in journal.createdBlobDirectories {
+                try? fileManager.removeItem(at: directory)
+            }
+            throw error
+        }
+    }
+
+    private func cleanupCommittedFileDeletions(_ journal: FileMutationJournal) {
+        let created = Set(journal.createdBlobDirectories.map(\.standardizedFileURL))
+        for directory in journal.deletedBlobDirectories where !created.contains(directory.standardizedFileURL) {
+            try? fileManager.removeItem(at: directory)
+        }
+        for id in journal.deletedItemIDs {
+            try? fileManager.removeItem(at: thumbnailDirectory.appendingPathComponent("\(id).thumb"))
+            try? fileManager.removeItem(at: thumbnailCacheDirectory.appendingPathComponent("\(id).jpg"))
+        }
+    }
+
+    private func removeOrphanedBlobDirectories() throws {
+        let referencedNames = try requireDatabase().read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT blobFileName FROM clipboard_contents WHERE blobFileName IS NOT NULL"
+            )
+        }
+        let referencedDirectories = Set(referencedNames.compactMap(Self.blobDirectoryName(from:)))
+        let directories = try fileManager.contentsOfDirectory(
+            at: blobDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        for directory in directories {
+            let values = try directory.resourceValues(forKeys: [.isDirectoryKey])
+            if values.isDirectory == true && !referencedDirectories.contains(directory.lastPathComponent) {
+                try? fileManager.removeItem(at: directory)
+            }
+        }
+    }
+
+    private static func blobDirectoryName(from fileName: String) -> String? {
+        let normalized = fileName.replacingOccurrences(of: "\\", with: "/")
+        guard let first = normalized.split(separator: "/", omittingEmptySubsequences: true).first else { return nil }
+        let name = String(first)
+        return name == "." || name == ".." ? nil : name
     }
 
     private func contentHash(for types: [ClipboardStoredType], crypto: any ClipboardCryptoProviding) -> String {

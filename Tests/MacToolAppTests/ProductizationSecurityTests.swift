@@ -143,6 +143,16 @@ final class FinderActionCodecTests: XCTestCase {
 }
 
 final class ProductSafetyTests: XCTestCase {
+    func testClipboardChangeTrackerResetSkipsPreEnableContent() {
+        var tracker = ClipboardChangeTracker(changeCount: 10)
+        XCTAssertTrue(tracker.consumeChange(11))
+
+        tracker.reset(to: 20)
+
+        XCTAssertFalse(tracker.consumeChange(20))
+        XCTAssertTrue(tracker.consumeChange(21))
+    }
+
     private var temporaryDirectories: [URL] = []
 
     override func tearDownWithError() throws {

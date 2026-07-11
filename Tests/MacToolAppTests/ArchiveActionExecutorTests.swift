@@ -268,6 +268,25 @@ final class ArchiveActionExecutorTests: XCTestCase {
         XCTAssertThrowsError(try ArchiveEngine().validateEntryPaths([escapingLink]))
     }
 
+    func testArchiveNameValidationRejectsPathTraversalAndControlCharacters() throws {
+        let parent = try makeTemporaryDirectory()
+        for name in ["", ".", "..", "../backup", "a/b", "a\\b", "bad\u{0000}name"] {
+            XCTAssertThrowsError(try ArchiveActionExecutor.validatedArchiveFileName(name, format: .zip, parent: parent), name)
+        }
+    }
+
+    func testArchiveNameValidationAcceptsLocalizedAndMultiDotNames() throws {
+        let parent = try makeTemporaryDirectory()
+        XCTAssertEqual(
+            try ArchiveActionExecutor.validatedArchiveFileName("项目 备份.v2", format: .zip, parent: parent),
+            "项目 备份.v2.zip"
+        )
+        XCTAssertEqual(
+            try ArchiveActionExecutor.validatedArchiveFileName("项目 备份.ZIP", format: .zip, parent: parent),
+            "项目 备份.ZIP"
+        )
+    }
+
     func testBundledEngineRoundTripsAllWritableFormats() throws {
         let root = try makeTemporaryDirectory()
         let source = root.appendingPathComponent("source", isDirectory: true)

@@ -9,6 +9,24 @@ enum ClipboardPasteMode {
     case plainText
 }
 
+struct ClipboardChangeTracker {
+    private(set) var lastChangeCount: Int
+
+    init(changeCount: Int) {
+        lastChangeCount = changeCount
+    }
+
+    mutating func reset(to changeCount: Int) {
+        lastChangeCount = changeCount
+    }
+
+    mutating func consumeChange(_ changeCount: Int) -> Bool {
+        guard changeCount != lastChangeCount else { return false }
+        lastChangeCount = changeCount
+        return true
+    }
+}
+
 final class ClipboardHistoryController {
     private static let knownPasswordManagerBundleIdentifiers: Set<String> = [
         "com.1password.1password",
@@ -28,7 +46,7 @@ final class ClipboardHistoryController {
     private let processingQueue = DispatchQueue(label: "com.fusheng.mac-tool.clipboard.processing", qos: .utility)
     private let pasteboard = NSPasteboard.general
     private var timer: Timer?
-    private var lastChangeCount: Int
+    private var changeTracker: ClipboardChangeTracker
     private var isWritingForPaste = false
     private var hasLoadedHistory = false
     private(set) var isLoadingHistory = false
@@ -58,7 +76,7 @@ final class ClipboardHistoryController {
     init(store: ProfileStore) {
         self.store = store
         self.historyStore = ClipboardHistoryStore()
-        self.lastChangeCount = NSPasteboard.general.changeCount
+        self.changeTracker = ClipboardChangeTracker(changeCount: NSPasteboard.general.changeCount)
     }
 
     func start() {
@@ -70,6 +88,7 @@ final class ClipboardHistoryController {
         loadHistoryIfNeeded { [weak self] in
             guard let self, self.store.clipboard.enabled else { return }
             self.pruneExpiredHistory()
+            self.synchronizePasteboardBaseline()
             self.scheduleClipboardTimer()
         }
     }
@@ -90,6 +109,7 @@ final class ClipboardHistoryController {
     }
 
     func updateConfiguration() {
+        let wasRecording = timer != nil
         hotKeyManager?.unregister()
         timer?.invalidate()
         timer = nil
@@ -101,8 +121,15 @@ final class ClipboardHistoryController {
             guard let self, self.store.clipboard.enabled else { return }
             self.pruneExpiredHistory()
             self.trimHistoryToConfiguredLimit()
+            if !wasRecording {
+                self.synchronizePasteboardBaseline()
+            }
             self.scheduleClipboardTimer()
         }
+    }
+
+    private func synchronizePasteboardBaseline() {
+        changeTracker.reset(to: pasteboard.changeCount)
     }
 
     func showHistoryPanel() {
@@ -132,7 +159,7 @@ final class ClipboardHistoryController {
         case .plainText:
             pasteboard.setString(item.plainText, forType: .string)
         }
-        lastChangeCount = pasteboard.changeCount
+        changeTracker.reset(to: pasteboard.changeCount)
 
         windowController?.hideIfNeededAfterPaste()
         let app = targetApplication
@@ -157,7 +184,7 @@ final class ClipboardHistoryController {
             }
             pasteboard.writeObjects([pasteboardItem])
         }
-        lastChangeCount = pasteboard.changeCount
+        changeTracker.reset(to: pasteboard.changeCount)
         isWritingForPaste = false
     }
 
@@ -316,12 +343,13 @@ final class ClipboardHistoryController {
     }
 
     private func pollPasteboard() {
-        guard store.backgroundTasksAllowed, store.clipboard.enabled, pasteboard.changeCount != lastChangeCount else { return }
+        guard store.backgroundTasksAllowed, store.clipboard.enabled,
+              pasteboard.changeCount != changeTracker.lastChangeCount else { return }
         guard hasLoadedHistory else {
             loadHistoryIfNeeded()
             return
         }
-        lastChangeCount = pasteboard.changeCount
+        _ = changeTracker.consumeChange(pasteboard.changeCount)
         guard !isWritingForPaste else { return }
         guard !store.clipboard.recordingPaused else { return }
         let sourceApp = NSWorkspace.shared.frontmostApplication
