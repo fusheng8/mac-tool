@@ -65,6 +65,8 @@ final class ProfileStore: @unchecked Sendable {
             schemaVersion: loadedConfig.schemaVersion,
             currentVersion: AppConfig.currentSchemaVersion
         )
+        let requiresDisplayConsentMigration = loadedConfig.schemaVersion < 2
+        let requiresPersistentDisplayCloseMigration = loadedConfig.schemaVersion < 4
         storedConfig = normalizedConfig
 
         do {
@@ -78,10 +80,13 @@ final class ProfileStore: @unchecked Sendable {
             lastPersistenceError = error
         }
 
-        // 0.2.0 升级必须重新确认显示器自动化；新 schema 已确认的用户不受影响。
-        if requiresConfigMigration {
+        // 0.2.0 之前的安装必须重新确认显示器自动化；后续 schema 升级保留已有授权。
+        if requiresDisplayConsentMigration {
             storedState.displayAutomationConsentVersion = 0
             storedState.displayAutomationApproved = false
+        }
+        if requiresPersistentDisplayCloseMigration {
+            storedState.pendingReconnects.removeAll()
         }
 
         do {

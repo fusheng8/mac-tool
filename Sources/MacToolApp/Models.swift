@@ -257,7 +257,7 @@ struct DisconnectConfig: Codable, Hashable {
     static let defaultValue = DisconnectConfig(
         enabled: false,
         allowSoftDisconnect: false,
-        autoReconnect: true,
+        autoReconnect: false,
         autoReconnectDelaySeconds: 30,
         externalOnly: true,
         confirmBeforeDisconnect: true
@@ -292,7 +292,7 @@ struct DisconnectConfig: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         allowSoftDisconnect = try container.decodeIfPresent(Bool.self, forKey: .allowSoftDisconnect) ?? false
-        autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? true
+        autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? false
         autoReconnectDelaySeconds = Self.normalizedReconnectDelay(
             try container.decodeIfPresent(Int.self, forKey: .autoReconnectDelaySeconds) ?? 30
         )
@@ -1162,7 +1162,7 @@ struct ClipboardHistoryItem: Codable, Hashable, Identifiable {
 }
 
 struct AppConfig: Codable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     var schemaVersion: Int
     var profiles: [DisplayProfile]
@@ -1209,6 +1209,7 @@ struct AppConfig: Codable {
     )
 
     func normalized() -> AppConfig {
+        let requiresPersistentDisplayCloseMigration = schemaVersion < 4
         var result = self
         result.schemaVersion = Self.currentSchemaVersion
         result.clipboard = clipboard.normalized()
@@ -1223,6 +1224,9 @@ struct AppConfig: Codable {
         result.profiles = profiles.map { profile in
             var normalizedProfile = profile
             normalizedProfile.match.matchThreshold = DisplayMatchRule.normalizedThreshold(profile.match.matchThreshold)
+            if requiresPersistentDisplayCloseMigration {
+                normalizedProfile.disconnect.autoReconnect = false
+            }
             normalizedProfile.disconnect.autoReconnectDelaySeconds = DisconnectConfig.normalizedReconnectDelay(
                 profile.disconnect.autoReconnectDelaySeconds
             )

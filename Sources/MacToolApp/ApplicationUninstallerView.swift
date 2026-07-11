@@ -38,9 +38,7 @@ final class ApplicationUninstallerView: NSView {
     private var selectedApplicationIDs: Set<String> = []
     private var plansByApplicationID: [String: ApplicationUninstallPlan] = [:]
     private var rowViewsByID: [String: ApplicationUninstallRowView] = [:]
-    private var filter: Filter = .removable
-    private var batchMode = false
-    private var planInspectionGeneration = UUID()
+    private var filter: Filter = .all
     private var isLoading = false
     private var isPreviewing = false
     private var isExecuting = false
@@ -58,13 +56,10 @@ final class ApplicationUninstallerView: NSView {
     private let clearButton = MacTextButton(title: "清空选择", symbolName: "xmark", role: .neutral)
     private let selectAllButton = MacTextButton(title: "选择可卸载", symbolName: "checklist", role: .neutral)
     private let historyButton = MacTextButton(title: "历史", symbolName: "clock.arrow.circlepath", role: .neutral)
-    private let batchModeButton = MacTextButton(title: "高级批量模式", symbolName: "checklist", role: .neutral)
     private let cancelBatchButton = MacTextButton(title: "停止队列", symbolName: "stop.circle", role: .destructive)
     private let statusLabel = NSTextField(labelWithString: "")
     private let summaryLabel = NSTextField(labelWithString: "")
     private let listStack = NSStackView()
-    private let listHeader = ApplicationUninstallListHeaderView()
-    private let inspectorContainer = NSView()
     private let emptyLabel = NSTextField(labelWithString: "")
     private let loadingPlaceholder = MacLoadingPlaceholderView(
         title: "正在扫描应用",
@@ -73,7 +68,6 @@ final class ApplicationUninstallerView: NSView {
     private let cancellationLock = NSLock()
     private var cancellationRequested = false
     private var adminKeepAliveTimer: DispatchSourceTimer?
-    private weak var summaryPanelView: NSView?
 
     init() {
         super.init(frame: .zero)
@@ -109,10 +103,8 @@ final class ApplicationUninstallerView: NSView {
 
         let headerView = header()
         let toolbarView = toolbar()
-        let listView = workspace()
+        let listView = listContainer()
         let summaryView = summaryPanel()
-        summaryPanelView = summaryView
-        summaryView.isHidden = true
         root.addArrangedSubview(headerView)
         root.addArrangedSubview(toolbarView)
         root.addArrangedSubview(listView)
@@ -176,7 +168,7 @@ final class ApplicationUninstallerView: NSView {
 
     private func toolbar() -> NSView {
         let toolbar = LayerBackedView(
-            backgroundColor: MacAssistantUI.Color.card,
+            backgroundColor: NSColor.white.withAlphaComponent(0.48),
             cornerRadius: 9,
             borderColor: MacAssistantUI.Color.hairline,
             borderWidth: 1
@@ -185,7 +177,7 @@ final class ApplicationUninstallerView: NSView {
 
         let label = smallLabel("范围")
         filterSelect.items = Filter.allCases.map(\.title)
-        filterSelect.selectedIndex = Filter.removable.rawValue
+        filterSelect.selectedIndex = 0
         filterSelect.target = self
         filterSelect.action = #selector(filterChanged)
         filterSelect.widthAnchor.constraint(equalToConstant: 112).isActive = true
@@ -196,12 +188,8 @@ final class ApplicationUninstallerView: NSView {
         clearButton.action = #selector(clearSelection)
         historyButton.target = self
         historyButton.action = #selector(showHistory)
-        batchModeButton.target = self
-        batchModeButton.action = #selector(toggleBatchMode)
-        selectAllButton.isHidden = true
-        clearButton.isHidden = true
 
-        let stack = NSStackView(views: [label, filterSelect, separatorDot(), batchModeButton, selectAllButton, clearButton, historyButton])
+        let stack = NSStackView(views: [label, filterSelect, separatorDot(), selectAllButton, clearButton, historyButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 8
@@ -225,7 +213,8 @@ final class ApplicationUninstallerView: NSView {
         )
         container.heightAnchor.constraint(equalToConstant: 420).isActive = true
 
-        container.addSubview(listHeader)
+        let header = ApplicationUninstallListHeaderView()
+        container.addSubview(header)
 
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
@@ -255,14 +244,14 @@ final class ApplicationUninstallerView: NSView {
         loadingPlaceholder.isHidden = true
 
         NSLayoutConstraint.activate([
-            listHeader.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            listHeader.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            listHeader.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-            listHeader.heightAnchor.constraint(equalToConstant: 28),
+            header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            header.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            header.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            header.heightAnchor.constraint(equalToConstant: 28),
 
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
-            scrollView.topAnchor.constraint(equalTo: listHeader.bottomAnchor, constant: 4),
+            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
 
             document.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
@@ -286,43 +275,6 @@ final class ApplicationUninstallerView: NSView {
             loadingPlaceholder.heightAnchor.constraint(equalToConstant: 190)
         ])
         return container
-    }
-
-    private func workspace() -> NSView {
-        let workspace = NSView()
-        workspace.translatesAutoresizingMaskIntoConstraints = false
-        workspace.heightAnchor.constraint(equalToConstant: 420).isActive = true
-
-        let list = listContainer()
-        let inspector = LayerBackedView(
-            backgroundColor: MacAssistantUI.Color.card,
-            cornerRadius: 8,
-            borderColor: MacAssistantUI.Color.hairline,
-            borderWidth: 1
-        )
-        inspectorContainer.translatesAutoresizingMaskIntoConstraints = false
-        inspector.addSubview(inspectorContainer)
-        workspace.addSubview(list)
-        workspace.addSubview(inspector)
-
-        NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: workspace.leadingAnchor),
-            list.topAnchor.constraint(equalTo: workspace.topAnchor),
-            list.bottomAnchor.constraint(equalTo: workspace.bottomAnchor),
-            list.widthAnchor.constraint(equalTo: workspace.widthAnchor, multiplier: 0.58, constant: -6),
-
-            inspector.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12),
-            inspector.trailingAnchor.constraint(equalTo: workspace.trailingAnchor),
-            inspector.topAnchor.constraint(equalTo: workspace.topAnchor),
-            inspector.bottomAnchor.constraint(equalTo: workspace.bottomAnchor),
-
-            inspectorContainer.leadingAnchor.constraint(equalTo: inspector.leadingAnchor, constant: 16),
-            inspectorContainer.trailingAnchor.constraint(equalTo: inspector.trailingAnchor, constant: -16),
-            inspectorContainer.topAnchor.constraint(equalTo: inspector.topAnchor, constant: 16),
-            inspectorContainer.bottomAnchor.constraint(equalTo: inspector.bottomAnchor, constant: -16)
-        ])
-        rebuildInspector()
-        return workspace
     }
 
     private func summaryPanel() -> NSView {
@@ -440,7 +392,6 @@ final class ApplicationUninstallerView: NSView {
             }
         rebuildList()
         updateSummary()
-        rebuildInspector()
     }
 
     private func rebuildList() {
@@ -456,26 +407,15 @@ final class ApplicationUninstallerView: NSView {
             emptyLabel.stringValue = applications.isEmpty ? "未扫描到应用。" : "没有符合当前筛选的应用。"
         }
 
-        listHeader.mode = batchMode ? .batch : .compact
         for app in filteredApplications {
-            if batchMode {
-                let row = ApplicationUninstallRowView(application: app)
-                row.isChecked = selectedApplicationIDs.contains(app.id)
-                row.isEnabled = app.canUninstall && !isBusy
-                row.target = self
-                row.action = #selector(rowToggled(_:))
-                listStack.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
-                rowViewsByID[app.id] = row
-            } else {
-                let row = ApplicationUninstallCompactRowView(application: app)
-                row.isSelected = selectedApplicationIDs.contains(app.id)
-                row.isEnabled = app.canUninstall && !isBusy
-                row.target = self
-                row.action = #selector(compactRowSelected(_:))
-                listStack.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
-            }
+            let row = ApplicationUninstallRowView(application: app)
+            row.isChecked = selectedApplicationIDs.contains(app.id)
+            row.isEnabled = app.canUninstall && !isBusy
+            row.target = self
+            row.action = #selector(rowToggled(_:))
+            listStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+            rowViewsByID[app.id] = row
         }
         statusLabel.stringValue = statusText()
         updateActions()
@@ -511,181 +451,6 @@ final class ApplicationUninstallerView: NSView {
         updateActions()
     }
 
-    private func rebuildInspector(
-        loadingApplication: InstalledApplication? = nil,
-        plan: ApplicationUninstallPlan? = nil
-    ) {
-        inspectorContainer.subviews.forEach { $0.removeFromSuperview() }
-
-        let title = MacAssistantUI.title("卸载检查", size: 16, weight: .bold)
-        let eyebrow = MacAssistantUI.caption("只读计划 · 不会立即删除")
-        let heading = NSStackView(views: [title, eyebrow])
-        heading.orientation = .vertical
-        heading.alignment = .leading
-        heading.spacing = 3
-
-        let content = NSStackView()
-        content.orientation = .vertical
-        content.alignment = .leading
-        content.spacing = 10
-
-        if batchMode {
-            content.addArrangedSubview(inspectorMessage(
-                symbol: "checklist",
-                title: "批量模式已开启",
-                detail: "在左侧选择多个应用，再从底部生成统一预览。每个应用仍会单独检查保护规则。"
-            ))
-        } else if let loadingApplication {
-            content.addArrangedSubview(applicationIdentity(loadingApplication))
-            content.addArrangedSubview(inspectorMessage(
-                symbol: "magnifyingglass",
-                title: "正在检查残留项",
-                detail: "正在分析应用支持文件、缓存、登录项和系统级项目。"
-            ))
-        } else if let plan {
-            content.addArrangedSubview(applicationIdentity(plan.application))
-            content.addArrangedSubview(inspectorMetrics(for: plan))
-
-            if let blocked = plan.blockedReason {
-                content.addArrangedSubview(inspectorNotice(blocked, color: .systemRed))
-            } else if !plan.warnings.isEmpty {
-                content.addArrangedSubview(inspectorNotice(plan.warnings.joined(separator: "\n"), color: MacAssistantUI.Color.amber))
-            } else {
-                content.addArrangedSubview(inspectorNotice("计划已通过路径与权限检查。系统级项目只提示，不自动删除。", color: MacAssistantUI.Color.green))
-            }
-
-            let continueButton = MacTextButton(title: "检查并继续", symbolName: "arrow.right", role: .primary)
-            continueButton.target = self
-            continueButton.action = #selector(previewSelected)
-            continueButton.isEnabled = !plan.isBlocked && !isBusy
-            content.addArrangedSubview(continueButton)
-        } else if let app = selectedApplications().first,
-                  let cachedPlan = plansByApplicationID[app.id] {
-            content.addArrangedSubview(applicationIdentity(app))
-            content.addArrangedSubview(inspectorMetrics(for: cachedPlan))
-        } else {
-            content.addArrangedSubview(inspectorMessage(
-                symbol: "cursorarrow.click.2",
-                title: "选择一个应用",
-                detail: "点击左侧应用后，这里会显示应用本体、残留项、预计可回收空间和权限风险。"
-            ))
-        }
-
-        let stack = NSStackView(views: [heading, content])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 18
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        inspectorContainer.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: inspectorContainer.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: inspectorContainer.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: inspectorContainer.topAnchor),
-            content.widthAnchor.constraint(equalTo: stack.widthAnchor)
-        ])
-        for view in content.arrangedSubviews where !(view is MacTextButton) {
-            view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-        }
-    }
-
-    private func applicationIdentity(_ app: InstalledApplication) -> NSView {
-        let icon = NSImageView()
-        icon.image = NSWorkspace.shared.icon(forFile: app.path.path)
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            icon.widthAnchor.constraint(equalToConstant: 40),
-            icon.heightAnchor.constraint(equalToConstant: 40)
-        ])
-
-        let name = MacAssistantUI.title(app.displayName, size: 14, weight: .semibold)
-        name.lineBreakMode = .byTruncatingTail
-        let source = app.source == .homebrewCask ? "Homebrew · \(app.homebrewCask ?? app.bundleID)" : app.bundleID
-        let metadata = MacAssistantUI.caption("\(source) · \(ByteCountFormatter.macToolString(from: app.sizeBytes))")
-        metadata.lineBreakMode = .byTruncatingMiddle
-        let text = NSStackView(views: [name, metadata])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 4
-
-        let row = NSStackView(views: [icon, text])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-        return row
-    }
-
-    private func inspectorMetrics(for plan: ApplicationUninstallPlan) -> NSView {
-        let residualCount = plan.items.filter { $0.category != .applicationBundle }.count
-        let values = [
-            ("应用本体", ByteCountFormatter.macToolString(from: plan.application.sizeBytes)),
-            ("残留项目", "\(residualCount) 项"),
-            ("预计可回收", ByteCountFormatter.macToolString(from: plan.estimatedRecoverableBytes)),
-            ("需要管理员权限", plan.trashItems.contains(where: \.requiresAdmin) ? "是" : "否")
-        ]
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 7
-        for (label, value) in values {
-            let key = MacAssistantUI.caption(label)
-            let val = NSTextField(labelWithString: value)
-            val.font = .systemFont(ofSize: 12, weight: .semibold)
-            val.textColor = .labelColor
-            let row = NSStackView(views: [key, val])
-            row.orientation = .horizontal
-            row.distribution = .fillEqually
-            stack.addArrangedSubview(row)
-        }
-        return stack
-    }
-
-    private func inspectorNotice(_ text: String, color: NSColor) -> NSView {
-        let label = NSTextField(wrappingLabelWithString: text)
-        label.font = .systemFont(ofSize: 11.5)
-        label.textColor = color
-        label.maximumNumberOfLines = 4
-        let view = LayerBackedView(
-            backgroundColor: color.withAlphaComponent(0.07),
-            cornerRadius: 7,
-            borderColor: color.withAlphaComponent(0.22),
-            borderWidth: 1
-        )
-        view.addSubview(label)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
-            label.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
-            label.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
-        ])
-        return view
-    }
-
-    private func inspectorMessage(symbol: String, title: String, detail: String) -> NSView {
-        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
-        icon.contentTintColor = MacAssistantUI.Color.blue
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            icon.widthAnchor.constraint(equalToConstant: 24),
-            icon.heightAnchor.constraint(equalToConstant: 24)
-        ])
-        let headline = MacAssistantUI.title(title, size: 13, weight: .semibold)
-        let copy = NSTextField(wrappingLabelWithString: detail)
-        copy.font = .systemFont(ofSize: 12)
-        copy.textColor = .secondaryLabelColor
-        copy.maximumNumberOfLines = 5
-        let text = NSStackView(views: [headline, copy])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 5
-        let row = NSStackView(views: [icon, text])
-        row.orientation = .horizontal
-        row.alignment = .top
-        row.spacing = 10
-        return row
-    }
-
     private func updateActions() {
         let hasSelection = !selectedApplicationIDs.isEmpty
         let canInteract = !isBusy
@@ -696,7 +461,6 @@ final class ApplicationUninstallerView: NSView {
         clearButton.isEnabled = hasSelection && canInteract
         selectAllButton.isEnabled = applications.contains(where: \.canUninstall) && canInteract
         historyButton.isEnabled = canInteract
-        batchModeButton.isEnabled = canInteract
         cancelBatchButton.isHidden = !isExecuting
         cancelBatchButton.isEnabled = isExecuting && !isCancellationRequested()
         for app in filteredApplications {
@@ -713,55 +477,8 @@ final class ApplicationUninstallerView: NSView {
             filterSelect.selectedIndex = filter.rawValue
             return
         }
-        filter = Filter(rawValue: filterSelect.selectedIndex) ?? .removable
+        filter = Filter(rawValue: filterSelect.selectedIndex) ?? .all
         applyFilter()
-    }
-
-    @objc private func toggleBatchMode() {
-        guard !isBusy else { return }
-        batchMode.toggle()
-        selectedApplicationIDs.removeAll()
-        plansByApplicationID.removeAll()
-        planInspectionGeneration = UUID()
-        batchModeButton.title = batchMode ? "退出批量模式" : "高级批量模式"
-        selectAllButton.isHidden = !batchMode
-        clearButton.isHidden = !batchMode
-        summaryPanelView?.isHidden = !batchMode
-        previewButton.title = "预览所选"
-        rebuildList()
-        updateSummary()
-        rebuildInspector()
-    }
-
-    @objc private func compactRowSelected(_ sender: ApplicationUninstallCompactRowView) {
-        guard !batchMode, !isBusy,
-              let app = applications.first(where: { $0.id == sender.applicationID }),
-              app.canUninstall else { return }
-        selectedApplicationIDs = [app.id]
-        rebuildList()
-        inspectPlan(for: app)
-    }
-
-    private func inspectPlan(for app: InstalledApplication) {
-        if let plan = plansByApplicationID[app.id] {
-            rebuildInspector(plan: plan)
-            return
-        }
-        let generation = UUID()
-        planInspectionGeneration = generation
-        rebuildInspector(loadingApplication: app)
-        workQueue.async { [weak self] in
-            guard let self else { return }
-            let plan = self.uninstaller.makePlan(for: app)
-            DispatchQueue.main.async {
-                guard self.planInspectionGeneration == generation,
-                      self.selectedApplicationIDs == [app.id],
-                      !self.batchMode else { return }
-                self.plansByApplicationID[app.id] = plan
-                self.rebuildInspector(plan: plan)
-                self.updateActions()
-            }
-        }
     }
 
     @objc private func rowToggled(_ sender: ApplicationUninstallRowView) {
@@ -793,7 +510,6 @@ final class ApplicationUninstallerView: NSView {
         selectedApplicationIDs.removeAll()
         rebuildList()
         updateSummary()
-        rebuildInspector()
     }
 
     @objc private func previewSelected() {
@@ -1055,26 +771,7 @@ private enum ApplicationUninstallListLayout {
 }
 
 private final class ApplicationUninstallListHeaderView: NSView {
-    enum Mode {
-        case compact
-        case batch
-    }
-
-    private let labels: [NSTextField]
-    var mode: Mode = .compact {
-        didSet { updateTitles() }
-    }
-
     override init(frame frameRect: NSRect) {
-        labels = ["应用", "信息", "状态"].map { title in
-            let label = NSTextField(labelWithString: title)
-            label.font = .systemFont(ofSize: 11, weight: .semibold)
-            label.textColor = .secondaryLabelColor
-            label.lineBreakMode = .byTruncatingTail
-            label.maximumNumberOfLines = 1
-            label.translatesAutoresizingMaskIntoConstraints = false
-            return label
-        }
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -1082,13 +779,19 @@ private final class ApplicationUninstallListHeaderView: NSView {
         layer?.cornerRadius = 6
         layer?.cornerCurve = .continuous
 
-        let columns = zip(labels, [
-            ApplicationUninstallListLayout.appRatio,
-            ApplicationUninstallListLayout.pathRatio,
-            ApplicationUninstallListLayout.metaRatio
-        ])
+        let columns = [
+            ("应用", ApplicationUninstallListLayout.appRatio),
+            ("Bundle ID / 路径", ApplicationUninstallListLayout.pathRatio),
+            ("来源 / 大小", ApplicationUninstallListLayout.metaRatio)
+        ]
         var previous: NSTextField?
-        for (label, ratio) in columns {
+        for (title, ratio) in columns {
+            let label = NSTextField(labelWithString: title)
+            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = .secondaryLabelColor
+            label.lineBreakMode = .byTruncatingTail
+            label.maximumNumberOfLines = 1
+            label.translatesAutoresizingMaskIntoConstraints = false
             addSubview(label)
 
             NSLayoutConstraint.activate([
@@ -1110,123 +813,11 @@ private final class ApplicationUninstallListHeaderView: NSView {
             previous = label
         }
         previous?.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -ApplicationUninstallListLayout.trailingInset).isActive = true
-        updateTitles()
     }
 
     required init?(coder: NSCoder) {
         fatalError("未实现 init(coder:)")
     }
-
-    private func updateTitles() {
-        let titles = mode == .batch
-            ? ["应用", "Bundle ID / 路径", "来源 / 大小"]
-            : ["应用", "来源 / 大小", "状态"]
-        for (label, title) in zip(labels, titles) {
-            label.stringValue = title
-        }
-    }
-}
-
-private final class ApplicationUninstallCompactRowView: NSControl {
-    let applicationID: String
-    private var selectedState = false
-
-    var isSelected: Bool {
-        get { selectedState }
-        set {
-            selectedState = newValue
-            needsDisplay = true
-        }
-    }
-
-    init(application: InstalledApplication) {
-        applicationID = application.id
-        super.init(frame: .zero)
-        setup(application)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("未实现 init(coder:)")
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        guard isEnabled else { return }
-        sendAction(action, to: target)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7)
-        if selectedState {
-            MacAssistantUI.Color.blue.withAlphaComponent(0.09).setFill()
-            path.fill()
-            MacAssistantUI.Color.brandBorder.setStroke()
-            path.lineWidth = 1
-            path.stroke()
-        }
-    }
-
-    private func setup(_ application: InstalledApplication) {
-        translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        heightAnchor.constraint(equalToConstant: 66).isActive = true
-
-        let icon = NSImageView()
-        icon.image = NSWorkspace.shared.icon(forFile: application.path.path)
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.translatesAutoresizingMaskIntoConstraints = false
-
-        let name = label(application.displayName, size: 13, weight: .semibold, color: .labelColor)
-        let lastUsed = application.lastUsedDate.map { Self.relativeDate.string(for: $0) ?? "使用时间未知" } ?? "使用时间未知"
-        let secondary = label(lastUsed, size: 11, weight: .regular, color: .secondaryLabelColor)
-        let appStack = NSStackView(views: [name, secondary])
-        appStack.orientation = .vertical
-        appStack.alignment = .leading
-        appStack.spacing = 4
-
-        let source = application.source == .homebrewCask ? "Homebrew" : "App"
-        let info = label("\(source) · \(ByteCountFormatter.macToolString(from: application.sizeBytes))", size: 11.5, weight: .medium, color: .secondaryLabelColor)
-        let stateText = application.requiresAdmin ? "需要管理员权限" : "移到废纸篓"
-        let stateColor = application.requiresAdmin ? MacAssistantUI.Color.amber : MacAssistantUI.Color.green
-        let state = label(stateText, size: 11, weight: .semibold, color: stateColor)
-
-        [icon, appStack, info, state].forEach(addSubview)
-        [appStack, info, state].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 34),
-            icon.heightAnchor.constraint(equalToConstant: 34),
-
-            appStack.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 9),
-            appStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            appStack.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.30, constant: -20),
-
-            info.leadingAnchor.constraint(equalTo: appStack.trailingAnchor, constant: 10),
-            info.centerYAnchor.constraint(equalTo: centerYAnchor),
-            info.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.30, constant: -12),
-
-            state.leadingAnchor.constraint(equalTo: info.trailingAnchor, constant: 10),
-            state.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
-            state.centerYAnchor.constraint(equalTo: centerYAnchor)
-        ])
-    }
-
-    private func label(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: size, weight: weight)
-        label.textColor = color
-        label.lineBreakMode = .byTruncatingTail
-        label.maximumNumberOfLines = 1
-        return label
-    }
-
-    private static let relativeDate: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.unitsStyle = .short
-        return formatter
-    }()
 }
 
 private final class ApplicationUninstallRowView: NSControl {

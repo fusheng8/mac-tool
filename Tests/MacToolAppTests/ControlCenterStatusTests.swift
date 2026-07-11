@@ -10,6 +10,8 @@ final class ControlCenterStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.headline, "所有核心服务均正常")
         XCTAssertTrue(snapshot.issues.isEmpty)
         XCTAssertEqual(snapshot.services.map(\.id), ["clipboard", "finder", "display", "archive"])
+        XCTAssertEqual(snapshot.services.first(where: { $0.id == "display" })?.detail, "2 台已连接")
+        XCTAssertEqual(snapshot.services.first(where: { $0.id == "archive" })?.detail, "10 种格式可用")
     }
 
     func testFinderAuthorizationCreatesPreferencesIssue() throws {
@@ -32,8 +34,13 @@ final class ControlCenterStatusTests: XCTestCase {
         let snapshot = ControlCenterStatusSnapshot.make(input: input)
 
         XCTAssertEqual(snapshot.level, .critical)
+        XCTAssertEqual(snapshot.headline, "有 2 项需要处理")
         XCTAssertEqual(snapshot.issues.count, 2)
         XCTAssertEqual(snapshot.issues.first(where: { $0.id == "display-recovery" })?.level, .critical)
+        XCTAssertEqual(
+            snapshot.issues.first(where: { $0.id == "display-recovery" })?.detail,
+            "有 2 台显示器处于恢复队列，请检查恢复状态。"
+        )
     }
 
     func testPrivacyExclusionsAreVisibleWithoutCreatingAnIssue() throws {
@@ -62,7 +69,7 @@ final class ControlCenterStatusTests: XCTestCase {
 }
 
 final class ControlCenterConfigurationMigrationTests: XCTestCase {
-    func testV2ConfigurationNormalizesToV3() throws {
+    func testV2ConfigurationNormalizesToV4() throws {
         let legacy = AppConfig(
             schemaVersion: 2,
             profiles: [],
@@ -75,8 +82,50 @@ final class ControlCenterConfigurationMigrationTests: XCTestCase {
         let migrated = decoded.normalized()
 
         XCTAssertEqual(decoded.schemaVersion, 2)
-        XCTAssertEqual(migrated.schemaVersion, 3)
+        XCTAssertEqual(migrated.schemaVersion, 4)
         XCTAssertEqual(migrated.contextMenu.items.map(\.id), ContextMenuConfig.defaultValue.items.map(\.id))
+    }
+
+    func testLegacyAutomaticReconnectMigratesToPersistentClose() {
+        let profile = DisplayProfile(
+            id: "built-in",
+            enabled: true,
+            name: "内置显示屏",
+            matchMode: .strict,
+            match: DisplayMatchRule(
+                displayName: "内置显示屏",
+                edidUUID: "",
+                vendorId: "0x0610",
+                modelId: "0xa05f",
+                serialNumber: "1",
+                manufacturer: "Apple",
+                alphanumericSerial: "",
+                ioLocation: "built-in",
+                matchThreshold: 80
+            ),
+            colorLock: .p3Default,
+            disconnect: DisconnectConfig(
+                enabled: true,
+                allowSoftDisconnect: true,
+                autoReconnect: true,
+                autoReconnectDelaySeconds: 30,
+                externalOnly: false,
+                confirmBeforeDisconnect: true
+            ),
+            automationEnabled: false
+        )
+        let legacy = AppConfig(
+            schemaVersion: 3,
+            profiles: [profile],
+            clipboard: .defaultValue,
+            archive: .defaultValue,
+            contextMenu: .defaultValue
+        )
+
+        let migrated = legacy.normalized()
+
+        XCTAssertEqual(migrated.schemaVersion, 4)
+        XCTAssertFalse(migrated.profiles[0].disconnect.autoReconnect)
     }
 
     func testFinderCustomizationKeepsOrderAndValidTarget() throws {

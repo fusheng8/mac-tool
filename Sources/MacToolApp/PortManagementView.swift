@@ -700,9 +700,6 @@ final class PortManagementView: NSView, NSTableViewDataSource, NSTableViewDelega
             }
         } catch {
             showAlert(title: "停止失败", message: error.localizedDescription)
-            if error is PortManagerError {
-                refresh()
-            }
         }
     }
 
