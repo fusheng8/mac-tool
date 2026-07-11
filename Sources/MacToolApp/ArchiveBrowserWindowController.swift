@@ -2,6 +2,12 @@ import AppKit
 import UniformTypeIdentifiers
 
 final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    private enum SecondaryToolbarAction: Int {
+        case add
+        case extractSelected
+        case delete
+        case clean
+    }
     private enum Column {
         static let name = NSUserInterfaceItemIdentifier("name")
         static let size = NSUserInterfaceItemIdentifier("size")
@@ -239,6 +245,8 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
     private let filterPopup = MacSelectControl()
     private let sortPopup = MacSelectControl()
     private let searchField = MacSearchField()
+    private let moreActionsButton = MacIconButton(symbolName: "ellipsis")
+    private var moreActionsPopover: NSPopover?
     private let previewImageView = NSImageView()
     private let previewTextView = NSTextView()
     private let previewTextScrollView = NSScrollView()
@@ -360,7 +368,7 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
         let extractAllItem = makeToolbarAction(
             title: "全部解压",
             symbol: "archivebox.fill",
-            tint: .systemOrange,
+            tint: MacAssistantUI.Color.blue,
             button: extractAllButton,
             action: #selector(extractAll)
         )
@@ -391,7 +399,11 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
             action: #selector(toggleExpandAll)
         )
 
-        let buttonStack = NSStackView(views: [addItem, extractItem, extractAllItem, deleteItem, cleanItem, expandItem])
+        addItem.isHidden = true
+        extractItem.isHidden = true
+        deleteItem.isHidden = true
+        cleanItem.isHidden = true
+        let buttonStack = NSStackView(views: [extractAllItem, expandItem])
         buttonStack.orientation = .horizontal
         buttonStack.alignment = .centerY
         buttonStack.spacing = 8
@@ -420,7 +432,11 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
         let viewButton = smallToolbarIcon("list.bullet", action: #selector(toggleListDensity))
         let settingsButton = smallToolbarIcon("gearshape", action: #selector(openArchiveSettings))
         let aboutButton = smallToolbarIcon("a.circle", action: #selector(showArchiveInfo))
-        let rightStack = NSStackView(views: [buttonStack, filterLabel, filterPopup, sortPopup, searchField, viewButton, settingsButton, aboutButton])
+        moreActionsButton.style = .subtle
+        moreActionsButton.toolTip = "更多操作"
+        moreActionsButton.target = self
+        moreActionsButton.action = #selector(showMoreActions)
+        let rightStack = NSStackView(views: [buttonStack, moreActionsButton, filterLabel, filterPopup, sortPopup, searchField, viewButton, settingsButton, aboutButton])
         rightStack.orientation = .horizontal
         rightStack.alignment = .centerY
         rightStack.spacing = 10
@@ -450,6 +466,63 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
         ])
 
         return toolbar
+    }
+
+    @objc private func showMoreActions() {
+        moreActionsPopover?.close()
+        let actions: [(String, String, SecondaryToolbarAction, Bool)] = [
+            ("添加文件", "plus", .add, addButton.isEnabled),
+            ("提取所选", "arrow.right.doc.on.clipboard", .extractSelected, extractButton.isEnabled),
+            ("删除所选", "trash", .delete, deleteButton.isEnabled),
+            ("清理元数据", "paintbrush", .clean, cleanButton.isEnabled)
+        ]
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        for action in actions {
+            let button = MacTextButton(
+                title: action.0,
+                symbolName: action.1,
+                role: action.2 == .delete ? .destructive : .neutral
+            )
+            button.tag = action.2.rawValue
+            button.isEnabled = action.3
+            button.target = self
+            button.action = #selector(secondaryToolbarActionPressed(_:))
+            button.widthAnchor.constraint(equalToConstant: 190).isActive = true
+            stack.addArrangedSubview(button)
+        }
+        let container = LayerBackedView(backgroundColor: MacAssistantUI.Color.content, cornerRadius: 10)
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        let controller = NSViewController()
+        controller.view = container
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.contentViewController = controller
+        popover.contentSize = NSSize(width: 210, height: 170)
+        moreActionsPopover = popover
+        popover.show(relativeTo: moreActionsButton.bounds, of: moreActionsButton, preferredEdge: .maxY)
+    }
+
+    @objc private func secondaryToolbarActionPressed(_ sender: MacTextButton) {
+        moreActionsPopover?.close()
+        guard let action = SecondaryToolbarAction(rawValue: sender.tag) else { return }
+        switch action {
+        case .add: addItems()
+        case .extractSelected: extractSelected()
+        case .delete: deleteItems()
+        case .clean: cleanItems()
+        }
     }
 
     private func makeToolbarAction(

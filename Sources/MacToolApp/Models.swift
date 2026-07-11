@@ -831,17 +831,80 @@ enum ContextMenuItemID: String, Codable, CaseIterable {
             return false
         }
     }
+
+    var supportsCustomTargetApplication: Bool {
+        switch self {
+        case .openWithIDEA, .openWithTypora, .openWithVSCode, .openInTerminal, .openInWarp:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+struct FinderTargetApplication: Codable, Hashable {
+    var bundleIdentifier: String
+    var displayName: String
+    var lastKnownPath: String
+
+    init(bundleIdentifier: String, displayName: String, lastKnownPath: String) {
+        self.bundleIdentifier = bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.lastKnownPath = lastKnownPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalized: FinderTargetApplication? {
+        let value = FinderTargetApplication(
+            bundleIdentifier: bundleIdentifier,
+            displayName: displayName,
+            lastKnownPath: lastKnownPath
+        )
+        guard !value.bundleIdentifier.isEmpty || !value.lastKnownPath.isEmpty else { return nil }
+        return value
+    }
 }
 
 struct ContextMenuItemConfig: Codable, Hashable, Identifiable {
     var id: ContextMenuItemID
     var enabled: Bool
     var children: [ContextMenuItemConfig]
+    var customTitle: String?
+    var targetApplication: FinderTargetApplication?
 
-    init(id: ContextMenuItemID, enabled: Bool = true, children: [ContextMenuItemConfig] = []) {
+    init(
+        id: ContextMenuItemID,
+        enabled: Bool = true,
+        children: [ContextMenuItemConfig] = [],
+        customTitle: String? = nil,
+        targetApplication: FinderTargetApplication? = nil
+    ) {
         self.id = id
         self.enabled = enabled
         self.children = children
+        self.customTitle = customTitle
+        self.targetApplication = targetApplication
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case enabled
+        case children
+        case customTitle
+        case targetApplication
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ContextMenuItemID.self, forKey: .id)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        children = try container.decodeIfPresent([ContextMenuItemConfig].self, forKey: .children) ?? []
+        customTitle = try container.decodeIfPresent(String.self, forKey: .customTitle)
+        targetApplication = try container.decodeIfPresent(FinderTargetApplication.self, forKey: .targetApplication)
+    }
+
+    var displayTitle: String {
+        let normalized = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? id.title : normalized
     }
 }
 
@@ -907,6 +970,17 @@ struct ContextMenuConfig: Codable, Hashable {
         )
     }
 
+    func item(for id: ContextMenuItemID) -> ContextMenuItemConfig? {
+        func find(in items: [ContextMenuItemConfig]) -> ContextMenuItemConfig? {
+            for item in items {
+                if item.id == id { return item }
+                if let child = find(in: item.children) { return child }
+            }
+            return nil
+        }
+        return find(in: items)
+    }
+
     private static func migrateLegacyItems(_ items: [ContextMenuItemConfig]) -> [ContextMenuItemConfig] {
         guard let createFolderItem = items.first(where: { $0.id == .createFolder }) else {
             return migrateLegacyArchiveItems(items)
@@ -957,7 +1031,9 @@ struct ContextMenuConfig: Codable, Hashable {
             return ContextMenuItemConfig(
                 id: item.id,
                 enabled: item.enabled,
-                children: normalize(items: item.children, defaults: defaultItem.children)
+                children: normalize(items: item.children, defaults: defaultItem.children),
+                customTitle: normalizedTitle(item.customTitle),
+                targetApplication: item.id.supportsCustomTargetApplication ? item.targetApplication?.normalized : nil
             )
         }
 
@@ -965,6 +1041,11 @@ struct ContextMenuConfig: Codable, Hashable {
             normalizedItems.append(defaultItem)
         }
         return normalizedItems
+    }
+
+    private static func normalizedTitle(_ title: String?) -> String? {
+        let value = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : String(value.prefix(60))
     }
 }
 
@@ -1081,7 +1162,7 @@ struct ClipboardHistoryItem: Codable, Hashable, Identifiable {
 }
 
 struct AppConfig: Codable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int
     var profiles: [DisplayProfile]

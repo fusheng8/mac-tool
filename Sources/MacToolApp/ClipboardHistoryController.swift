@@ -4,6 +4,10 @@ import Foundation
 import ImageIO
 import MacToolCore
 
+extension Notification.Name {
+    static let clipboardHistoryDidChange = Notification.Name("com.fusheng.mac-tool.clipboardHistoryDidChange")
+}
+
 enum ClipboardPasteMode {
     case formatted
     case plainText
@@ -75,6 +79,7 @@ final class ClipboardHistoryController {
     private(set) var history: [ClipboardHistoryItem] = [] {
         didSet {
             windowController?.reload()
+            NotificationCenter.default.post(name: .clipboardHistoryDidChange, object: self)
         }
     }
 
@@ -91,7 +96,10 @@ final class ClipboardHistoryController {
 
     init(store: ProfileStore) {
         self.store = store
-        self.historyStore = ClipboardHistoryStore()
+        let qaCrypto: (any ClipboardCryptoProviding)? = ProcessInfo.processInfo.environment["MAC_TOOL_QA_EPHEMERAL_CRYPTO"] == "1"
+            ? EphemeralClipboardCryptoProvider()
+            : nil
+        self.historyStore = ClipboardHistoryStore(cryptoProvider: qaCrypto)
         self.changeTracker = ClipboardChangeTracker(changeCount: NSPasteboard.general.changeCount)
     }
 

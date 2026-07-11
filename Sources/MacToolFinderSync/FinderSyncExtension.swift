@@ -50,9 +50,9 @@ final class FinderSyncExtension: FIFinderSync {
         }
 
         if item.children.isEmpty {
-            let menuItem = NSMenuItem(title: item.id.title, action: #selector(performMenuAction(_:)), keyEquivalent: "")
+            let menuItem = NSMenuItem(title: item.displayTitle, action: #selector(performMenuAction(_:)), keyEquivalent: "")
             menuItem.tag = item.id.actionTag
-            menuItem.image = NSImage(systemSymbolName: item.id.symbolName, accessibilityDescription: item.id.title)
+            menuItem.image = NSImage(systemSymbolName: item.id.symbolName, accessibilityDescription: item.displayTitle)
             return menuItem
         }
 
@@ -61,9 +61,9 @@ final class FinderSyncExtension: FIFinderSync {
             return nil
         }
 
-        let menuItem = NSMenuItem(title: item.id.title, action: nil, keyEquivalent: "")
-        menuItem.image = NSImage(systemSymbolName: item.id.symbolName, accessibilityDescription: item.id.title)
-        let submenu = NSMenu(title: item.id.title)
+        let menuItem = NSMenuItem(title: item.displayTitle, action: nil, keyEquivalent: "")
+        menuItem.image = NSImage(systemSymbolName: item.id.symbolName, accessibilityDescription: item.displayTitle)
+        let submenu = NSMenu(title: item.displayTitle)
         for child in enabledChildren {
             if let childItem = makeMenuItem(child, context: context) {
                 submenu.addItem(childItem)
@@ -484,12 +484,50 @@ private struct FinderContextMenuItemConfig: Codable, Hashable {
     var id: FinderContextMenuItemID
     var enabled: Bool
     var children: [FinderContextMenuItemConfig]
+    var customTitle: String?
+    var targetApplication: FinderTargetApplicationConfig?
 
-    init(id: FinderContextMenuItemID, enabled: Bool = true, children: [FinderContextMenuItemConfig] = []) {
+    init(
+        id: FinderContextMenuItemID,
+        enabled: Bool = true,
+        children: [FinderContextMenuItemConfig] = [],
+        customTitle: String? = nil,
+        targetApplication: FinderTargetApplicationConfig? = nil
+    ) {
         self.id = id
         self.enabled = enabled
         self.children = children
+        self.customTitle = customTitle
+        self.targetApplication = targetApplication
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case enabled
+        case children
+        case customTitle
+        case targetApplication
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(FinderContextMenuItemID.self, forKey: .id)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        children = try container.decodeIfPresent([FinderContextMenuItemConfig].self, forKey: .children) ?? []
+        customTitle = try container.decodeIfPresent(String.self, forKey: .customTitle)
+        targetApplication = try container.decodeIfPresent(FinderTargetApplicationConfig.self, forKey: .targetApplication)
+    }
+
+    var displayTitle: String {
+        let normalized = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? id.title : normalized
+    }
+}
+
+private struct FinderTargetApplicationConfig: Codable, Hashable {
+    var bundleIdentifier: String
+    var displayName: String
+    var lastKnownPath: String
 }
 
 private struct FinderContextMenuConfig: Codable, Hashable {
@@ -563,7 +601,9 @@ private struct FinderContextMenuConfig: Codable, Hashable {
             return FinderContextMenuItemConfig(
                 id: item.id,
                 enabled: item.enabled,
-                children: normalize(items: item.children, defaults: defaultItem.children)
+                children: normalize(items: item.children, defaults: defaultItem.children),
+                customTitle: normalizedTitle(item.customTitle),
+                targetApplication: item.targetApplication
             )
         }
 
@@ -571,6 +611,11 @@ private struct FinderContextMenuConfig: Codable, Hashable {
             normalizedItems.append(defaultItem)
         }
         return normalizedItems
+    }
+
+    private static func normalizedTitle(_ title: String?) -> String? {
+        let value = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : String(value.prefix(60))
     }
 
     static let defaultValue = FinderContextMenuConfig(

@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-final class MenuBarController {
+final class MenuBarController: NSObject, NSPopoverDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let store: ProfileStore
     private let detector: DisplayDetector
@@ -12,9 +12,12 @@ final class MenuBarController {
     private let clipboard: ClipboardHistoryController
     private let onOpenPortManagement: () -> Void
     private let onCheckForUpdates: () -> Void
+    private let onStartArchivePreset: (ArchivePresetID) -> Void
     private let onConfigurationChanged: () -> Void
     private let loginItems = LoginItemController()
     private var settingsWindowController: SettingsWindowController?
+    private let popover = NSPopover()
+    private var popoverController: MenuBarPopoverController?
 
     init(
         store: ProfileStore,
@@ -26,6 +29,7 @@ final class MenuBarController {
         clipboard: ClipboardHistoryController,
         onOpenPortManagement: @escaping () -> Void = {},
         onCheckForUpdates: @escaping () -> Void = {},
+        onStartArchivePreset: @escaping (ArchivePresetID) -> Void = { _ in },
         onConfigurationChanged: @escaping () -> Void = {}
     ) {
         self.store = store
@@ -37,7 +41,12 @@ final class MenuBarController {
         self.clipboard = clipboard
         self.onOpenPortManagement = onOpenPortManagement
         self.onCheckForUpdates = onCheckForUpdates
+        self.onStartArchivePreset = onStartArchivePreset
         self.onConfigurationChanged = onConfigurationChanged
+        super.init()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
         configureStatusButton()
         rebuildMenu()
     }
@@ -45,26 +54,8 @@ final class MenuBarController {
     func rebuildMenu() {
         statusItem.button?.title = ""
         statusItem.button?.toolTip = statusSummary()
-        let menu = NSMenu()
-
-        menu.addItem(actionItem("打开剪贴板历史", #selector(openClipboardHistory), nil))
-        menu.addItem(settingsPageItem("系统概览", .systemOverview))
-        menu.addItem(settingsPageItem("显示器", .displays))
-        menu.addItem(settingsPageItem("剪贴板", .clipboard))
-        menu.addItem(settingsPageItem("压缩/解压", .archive))
-        menu.addItem(settingsPageItem("右键菜单", .contextMenu))
-        menu.addItem(settingsPageItem("端口管理", .portManagement))
-        menu.addItem(settingsPageItem("应用卸载", .appUninstall))
-        menu.addItem(settingsPageItem("设置", .settings))
-        menu.addItem(.separator())
-
-        let loginItem = actionItem("开机自启", #selector(toggleLoginItem), nil)
-        loginItem.state = loginItems.isEnabled ? .on : .off
-        menu.addItem(loginItem)
-        menu.addItem(actionItem("检查更新", #selector(checkForUpdates), nil))
-        menu.addItem(.separator())
-        menu.addItem(quitItem())
-        statusItem.menu = menu
+        statusItem.menu = nil
+        popoverController?.update(model: makePopoverModel())
     }
 
     func refreshAfterDisplayChange() {
@@ -81,6 +72,9 @@ final class MenuBarController {
         button.image = statusIcon()
         button.imagePosition = .imageOnly
         button.toolTip = statusSummary()
+        button.target = self
+        button.action = #selector(togglePopover)
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
     private func statusIcon() -> NSImage? {
@@ -107,6 +101,69 @@ final class MenuBarController {
         return ([clipboardText, finderText] + [pendingText].compactMap { $0 }).joined(separator: " · ")
     }
 
+    private func makeStatusSnapshot() -> ControlCenterStatusSnapshot {
+        let clipboardConfig = store.clipboard
+        return ControlCenterStatusSnapshot.make(input: ControlCenterStatusInput(
+            clipboardEnabled: clipboardConfig.enabled,
+            clipboardPaused: clipboardConfig.recordingPaused,
+            clipboardPrivacyExclusionsActive: clipboardConfig.excludeKnownPasswordManagers || !clipboardConfig.excludedBundleIdentifiers.isEmpty,
+            finderFeatureEnabled: store.contextMenu.enabled,
+            finderExtensionEnabled: SystemCapabilities.finderExtensionStatus().enabled,
+            connectedDisplayCount: detector.onlineDisplays().filter(\.isActive).count,
+            pendingDisplayRecoveryCount: store.pendingReconnects.count,
+            archiveFormatCount: store.archive.enabledFormats.count
+        ))
+    }
+
+    private func makePopoverModel() -> MenuBarPopoverModel {
+        MenuBarPopoverModel(
+            status: makeStatusSnapshot(),
+            clipboardCount: clipboard.history.count,
+            connectedDisplayCount: detector.onlineDisplays().filter(\.isActive).count,
+            loginItemEnabled: loginItems.isEnabled
+        )
+    }
+
+    @objc private func togglePopover() {
+        if popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let button = statusItem.button else { return }
+        let controller = popoverController ?? makePopoverController()
+        controller.update(model: makePopoverModel())
+        popover.contentViewController = controller
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private func makePopoverController() -> MenuBarPopoverController {
+        let controller = MenuBarPopoverController(model: makePopoverModel())
+        controller.onOpenRoute = { [weak self] route in
+            self?.popover.performClose(nil)
+            self?.openSettings(route: route)
+        }
+        controller.onOpenClipboard = { [weak self] in
+            self?.popover.performClose(nil)
+            self?.clipboard.showHistoryPanel()
+        }
+        controller.onCheckForUpdates = { [weak self] in
+            self?.popover.performClose(nil)
+            self?.onCheckForUpdates()
+        }
+        controller.onToggleLoginItem = { [weak self] in
+            guard let self else { return }
+            self.toggleLoginItem()
+            self.popoverController?.update(model: self.makePopoverModel())
+        }
+        controller.onQuit = { [weak self] in
+            self?.popover.performClose(nil)
+            NSApp.terminate(nil)
+        }
+        controller.onDismiss = { [weak self] in self?.popover.performClose(nil) }
+        popoverController = controller
+        return controller
+    }
+
     private func actionItem(_ title: String, _ selector: Selector, _ representedObject: Any?) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
         item.target = self
@@ -130,27 +187,31 @@ final class MenuBarController {
     }
 
     func openSettingsWindow() {
-        openSystemOverview()
+        openSettings(route: .overview)
     }
 
     func openSystemOverview() {
-        openSettings(page: .systemOverview)
+        openSettings(route: .overview)
     }
 
     func openDisplaySettings() {
-        openSettings(page: .displays)
+        openSettings(route: .displays)
     }
 
     func openPortManagement() {
-        openSettings(page: .portManagement)
+        openSettings(route: .ports)
     }
 
     func openApplicationUninstaller() {
-        openSettings(page: .appUninstall)
+        openSettings(route: .uninstall)
     }
 
     func openArchiveSettings() {
-        openSettings(page: .archive)
+        openSettings(route: .archive)
+    }
+
+    func openControlCenter(_ route: ControlCenterRoute) {
+        openSettings(route: route)
     }
 
     @objc private func openClipboardHistory() {
@@ -168,15 +229,21 @@ final class MenuBarController {
                 disconnect: disconnect,
                 recovery: recovery,
                 statuses: statuses,
-                clipboardController: clipboard
-            ) { [weak self] in
-                self?.onCheckForUpdates()
-            } onSave: { [weak self] in
-                self?.store.reload()
-                self?.clipboard.updateConfiguration()
-                self?.onConfigurationChanged()
-                self?.rebuildMenu()
-            } onClose: {}
+                clipboardController: clipboard,
+                onCheckForUpdates: { [weak self] in
+                    self?.onCheckForUpdates()
+                },
+                onStartArchivePreset: { [weak self] presetID in
+                    self?.onStartArchivePreset(presetID)
+                },
+                onSave: { [weak self] in
+                    self?.store.reload()
+                    self?.clipboard.updateConfiguration()
+                    self?.onConfigurationChanged()
+                    self?.rebuildMenu()
+                },
+                onClose: {}
+            )
         }
         if let page {
             settingsWindowController?.selectPage(page)
@@ -188,6 +255,10 @@ final class MenuBarController {
         settingsWindowController?.showWindow(nil)
         settingsWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func openSettings(route: ControlCenterRoute) {
+        openSettings(page: SettingsWindowController.SettingsPage(route: route))
     }
 
     @objc private func toggleLoginItem() {
