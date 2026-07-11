@@ -1,4 +1,5 @@
 import AppKit
+import MacToolCore
 
 final class ArchiveCompressionOptionsWindowController: NSWindowController {
     private let urls: [URL]
@@ -77,7 +78,7 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
         compressionLevelLabel.textColor = .secondaryLabelColor
         updateCompressionLevelLabel()
 
-        passwordField.placeholder = "可选，仅 ZIP / 7Z / RAR 支持"
+        passwordField.placeholder = "可选，仅支持英文、数字和半角符号"
         passwordField.showsSearchIcon = false
         passwordField.isSecure = true
         passwordField.isEnabled = selectedFormat.supportsCompressionPassword

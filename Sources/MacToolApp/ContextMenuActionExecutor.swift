@@ -21,13 +21,16 @@ enum ContextMenuActionError: LocalizedError {
 final class ContextMenuActionExecutor {
     private let progressHandler: ((ArchiveActionExecutor.Progress) -> Void)?
     private let archivePasswords: [String: String]
+    private let archiveCancellation: ArchiveCancellationToken?
 
     init(
         progressHandler: ((ArchiveActionExecutor.Progress) -> Void)? = nil,
-        archivePasswords: [String: String] = [:]
+        archivePasswords: [String: String] = [:],
+        archiveCancellation: ArchiveCancellationToken? = nil
     ) {
         self.progressHandler = progressHandler
         self.archivePasswords = archivePasswords
+        self.archiveCancellation = archiveCancellation
     }
 
     func perform(itemID: ContextMenuItemID, urls: [URL]) throws {
@@ -96,7 +99,11 @@ final class ContextMenuActionExecutor {
     }
 
     private func archiveExecutor() -> ArchiveActionExecutor {
-        ArchiveActionExecutor(progressHandler: progressHandler, archivePasswords: archivePasswords)
+        ArchiveActionExecutor(
+            progressHandler: progressHandler,
+            archivePasswords: archivePasswords,
+            cancellation: archiveCancellation
+        )
     }
 
     private func targetDirectory(from urls: [URL]) throws -> URL {

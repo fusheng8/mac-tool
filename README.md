@@ -2,7 +2,7 @@
 
 Mac助手是一款面向 macOS 的轻量菜单栏效率工具。它把外接显示器控制、剪贴板历史、Finder 右键增强、压缩/解压和端口占用查看放在一个本机 App 里，适合经常连接外接显示器、处理压缩包、排查本地服务端口的 Mac 用户。
 
-当前稳定版本为 `0.2.0`，仅支持 Apple Silicon（arm64）和 macOS 13 Ventura 或更高版本。隐私、故障恢复和兼容性说明分别见 [PRIVACY.md](PRIVACY.md)、[docs/recovery.md](docs/recovery.md) 与 [docs/compatibility.md](docs/compatibility.md)。
+当前稳定版本为 `0.2.1`，仅支持 Apple Silicon（arm64）和 macOS 13 Ventura 或更高版本。隐私、故障恢复和兼容性说明分别见 [PRIVACY.md](PRIVACY.md)、[docs/recovery.md](docs/recovery.md) 与 [docs/compatibility.md](docs/compatibility.md)。
 
 底层项目名和主可执行文件名为 `mac-tool`，App 展示名为 `Mac助手`。
 
@@ -130,16 +130,16 @@ DDC 控制用于直接向外接显示器写入 VCP 指令，当前提供常见�
 
 | 格式 | 能力说明 |
 | --- | --- |
-| ZIP | macOS 自带支持，适合通用文件交换，支持密码压缩 |
-| TAR | Unix tar 归档，不带压缩 |
-| tar.gz / tgz | 常见源码包格式，macOS 自带支持 |
+| ZIP | 内置归档引擎支持 ZIP64、传统加密和 AES 加密包 |
+| TAR | 内置归档引擎支持 Unix tar 归档 |
+| tar.gz / tgz | 内置归档引擎支持常见源码包格式 |
 | tar.bz2 / tbz | bzip2 压缩的 tar 归档 |
-| tar.xz / txz | xz 压缩的 tar 归档，需要系统可用 `xz` |
+| tar.xz / txz | xz 压缩的 tar 归档 |
 | GZIP | 单文件 gzip 压缩 |
 | BZIP2 | 单文件 bzip2 压缩 |
-| XZ | 单文件 xz 压缩，需要系统可用 `xz` |
-| 7Z | 需要安装 `7zz` 或 `7z`，支持密码压缩 |
-| RAR | 读取/解压通常可通过 `7zz` 或 `7z`，创建 RAR 需要 `rar` |
+| XZ | 单文件 xz 压缩 |
+| 7Z | 内置归档引擎支持读取、解压和密码压缩 |
+| RAR | 内置归档引擎支持读取/解压；创建 RAR 需要额外安装 `rar` |
 
 ### 压缩包预览
 
@@ -205,11 +205,13 @@ Finder 右键菜单依赖 Finder Sync 扩展。首次安装或更换 Bundle ID �
 ## 系统要求
 
 - macOS 13 Ventura 或更高版本。
-- Apple Silicon（arm64）；0.2.0 不提供 Intel 构建。
+- Apple Silicon（arm64）；0.2.1 不提供 Intel 构建。
 - Swift 6 toolchain / Xcode 16 或更高版本。
 - 非沙盒运行环境。项目使用显示相关私有符号和 Finder Sync 扩展，不适合上架 Mac App Store。
 - DDC/CI 功能依赖显示器、连接线和 macOS 当前暴露的底层能力；部分显示器可能不支持亮度、对比度或音量 VCP 码。
-- 7z、RAR、XZ 等格式依赖本机命令行工具，例如 `7zz`/`7z`、`rar`、`xz`。ZIP、tar、gzip、bzip2 通常可直接使用系统自带工具。
+- App 内置固定版本的 7-Zip 控制台引擎，ZIP、TAR、GZIP、BZIP2、XZ、7Z 和 RAR 读取/解压不依赖 Homebrew；只有创建或修改 RAR 需要额外安装 `rar`。
+- 内置 7-Zip 依据 LGPL 及 unRAR 限制分发，许可证随 App 位于 `Contents/Resources/ThirdPartyLicenses/7-Zip.txt`。
+- 受 macOS 版 7-Zip 控制台限制，压缩密码目前仅支持 ASCII 字符；中文文件名不受影响。
 
 ## 快速开始
 
@@ -243,7 +245,7 @@ scripts/build_dmg.sh
 生成位置类似：
 
 ```text
-.build/Mac助手-0.2.0.dmg
+.build/Mac助手-0.2.1.dmg
 ```
 
 版本号只从仓库根目录的 `VERSION` 读取，构建号取 Git 提交计数。DMG 始终包含指向 `/Applications` 的安装入口。发布工作流只响应与 `VERSION` 一致的版本标签或手动触发；PR 与 `main` 使用只读 CI 验证。
@@ -256,7 +258,7 @@ Mac助手使用 Sparkle 2 检查并安装后续更新。更新包仍通过 GitHu
 https://fusheng8.github.io/mac-tool/appcast.xml
 ```
 
-0.2.0 个人稳定版使用固定 Apple Development 身份和 Hardened Runtime，暂不包含 Developer ID 公证。安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
+0.2.1 个人稳定版使用固定 Apple Development 身份和 Hardened Runtime，暂不包含 Developer ID 公证。安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
 
 ```text
 SPARKLE_PRIVATE_KEY
@@ -276,8 +278,8 @@ CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
 ```bash
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" \
   DMG_NAME=MacTool.dmg scripts/build_dmg.sh
-gh release create 0.2.0 .build/MacTool.dmg \
-  --title 0.2.0 --generate-notes --verify-tag --draft
+gh release create 0.2.1 .build/MacTool.dmg \
+  --title 0.2.1 --generate-notes --verify-tag --draft
 ```
 
 版本标签触发后，GitHub Actions 会下载该预签名 DMG，重新验证磁盘镜像、arm64 架构、固定 Team Identifier、Hardened Runtime、Bundle/扩展签名、版本和路径，再使用仓库中已有的 `SPARKLE_PRIVATE_KEY` 生成 appcast。验证完成前 Release 保持草稿状态。
@@ -368,6 +370,19 @@ Licenses/
 - 外接显示器控制结果取决于显示器固件、连接方式、扩展坞和线材。
 - Finder Sync 扩展受 macOS 权限、系统缓存和 Finder 状态影响，首次安装后可能需要重启 Finder 或重新启用扩展。
 - 剪贴板历史、元数据、blob 和缩略图均使用本机钥匙串密钥加密；如果你会复制敏感内容，仍建议开启密码管理器排除、暂停记录或定期清理历史。
+
+## 开源项目参考与使用
+
+本项目的实现、运行时能力和测试数据参考或使用了以下开源项目：
+
+| 项目 | 在本项目中的用途 |
+| --- | --- |
+| [m1ddc](https://github.com/waydabber/m1ddc) | DDC/CI 显示器控制后端参考了其实现思路，相关 MIT 许可证见 [Licenses/m1ddc-MIT-LICENSE](Licenses/m1ddc-MIT-LICENSE)。 |
+| [Mole CLI](https://github.com/tw93/mole) | 应用卸载、残留文件扫描、路径保护和安全删除等能力参考了其设计思路。 |
+| [GRDB.swift](https://github.com/groue/GRDB.swift) | 作为 SwiftPM 依赖，用于剪贴板历史的 SQLite 数据存储。 |
+| [Sparkle](https://github.com/sparkle-project/Sparkle) | 作为 SwiftPM 依赖，用于检查、验证和安装应用更新。 |
+| [7-Zip](https://github.com/ip7z/7zip) | 随 App 分发固定版本的 `7zz` 控制台引擎，用于压缩包读取、创建、解压和修改。 |
+| [libarchive](https://github.com/libarchive/libarchive) | RAR 兼容性测试中的历史样本来源。 |
 
 ## 友情链接
 

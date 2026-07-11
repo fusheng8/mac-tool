@@ -70,7 +70,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "MacToolFinderSync",
-            dependencies: ["MacToolBridge"],
+            dependencies: ["MacToolBridge", "MacToolCore"],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ],
@@ -81,7 +81,8 @@ let package = Package(
         ),
         .testTarget(
             name: "MacToolAppTests",
-            dependencies: ["MacToolApp", "MacToolCore", "MacToolBridge"]
+            dependencies: ["MacToolApp", "MacToolCore", "MacToolBridge"],
+            resources: [.copy("Fixtures")]
         )
     ]
 )

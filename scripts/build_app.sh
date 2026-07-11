@@ -7,6 +7,7 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
+HELPERS_DIR="$CONTENTS_DIR/Helpers"
 PLUGINS_DIR="$CONTENTS_DIR/PlugIns"
 EXTENSION_DIR="$PLUGINS_DIR/mac-tool-finder-sync.appex"
 EXTENSION_CONTENTS_DIR="$EXTENSION_DIR/Contents"
@@ -53,7 +54,7 @@ fi
 MAC_TOOL_RESOURCE_BUNDLE="$(find "$ROOT_DIR/.build/arm64-apple-macosx/release" "$ROOT_DIR/.build/release" -maxdepth 1 -name "mac-tool_MacToolApp.bundle" -type d -print -quit 2>/dev/null || true)"
 
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$EXTENSION_MACOS_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR" "$HELPERS_DIR" "$EXTENSION_MACOS_DIR"
 cp "$BIN_DIR/mac-tool" "$MACOS_DIR/mac-tool"
 cp "$BIN_DIR/mac-tool-finder-sync" "$EXTENSION_MACOS_DIR/mac-tool-finder-sync"
 strip -S "$MACOS_DIR/mac-tool"
@@ -77,6 +78,10 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/mac-to
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 cp "$ROOT_DIR/Resources/StatusIconRingTemplate.png" "$RESOURCES_DIR/StatusIconRingTemplate.png"
 cp "$ROOT_DIR/Resources/StatusIconRingGray.png" "$RESOURCES_DIR/StatusIconRingGray.png"
+cp "$ROOT_DIR/Vendor/7zip/7zz" "$HELPERS_DIR/7zz"
+chmod 755 "$HELPERS_DIR/7zz"
+mkdir -p "$RESOURCES_DIR/ThirdPartyLicenses"
+cp "$ROOT_DIR/Vendor/7zip/LICENSE.txt" "$RESOURCES_DIR/ThirdPartyLicenses/7-Zip.txt"
 
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -107,6 +112,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
     <key>LSMultipleInstancesProhibited</key>
     <true/>
     <key>SUFeedURL</key>
@@ -242,11 +249,12 @@ PLIST
 /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $SPARKLE_PUBLIC_ED_KEY" "$CONTENTS_DIR/Info.plist"
 
 codesign --force --deep --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
+codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$HELPERS_DIR/7zz"
 codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT_DIR/scripts/finder_sync_extension.entitlements" "$EXTENSION_DIR"
 codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$APP_DIR"
 
-if [[ "$(lipo -archs "$MACOS_DIR/mac-tool")" != "arm64" || "$(lipo -archs "$EXTENSION_MACOS_DIR/mac-tool-finder-sync")" != "arm64" ]]; then
-    echo "构建失败：主程序或 Finder 扩展不是纯 arm64。" >&2
+if [[ "$(lipo -archs "$MACOS_DIR/mac-tool")" != "arm64" || "$(lipo -archs "$EXTENSION_MACOS_DIR/mac-tool-finder-sync")" != "arm64" || "$(lipo -archs "$HELPERS_DIR/7zz")" != "arm64" ]]; then
+    echo "构建失败：主程序、Finder 扩展或内置 7zz 不是纯 arm64。" >&2
     exit 1
 fi
 

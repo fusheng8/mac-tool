@@ -161,7 +161,6 @@ final class MenuBarController {
         if page == .portManagement {
             onOpenPortManagement()
         }
-        NSApp.setActivationPolicy(.regular)
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 store: store,
@@ -177,9 +176,7 @@ final class MenuBarController {
                 self?.clipboard.updateConfiguration()
                 self?.onConfigurationChanged()
                 self?.rebuildMenu()
-            } onClose: {
-                NSApp.setActivationPolicy(.accessory)
-            }
+            } onClose: {}
         }
         if let page {
             settingsWindowController?.selectPage(page)

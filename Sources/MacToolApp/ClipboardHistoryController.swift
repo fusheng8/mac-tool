@@ -623,17 +623,9 @@ final class ClipboardHistoryController {
 
     private func showAccessibilityAlert() {
         Task { @MainActor in
-            let previousPolicy = NSApp.activationPolicy()
-            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
 
             PermissionGuideFlow.shared.authorize(.accessibility)
-
-            if previousPolicy == .accessory {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    NSApp.setActivationPolicy(.accessory)
-                }
-            }
         }
     }
 
