@@ -51,13 +51,13 @@ final class FinderEnhancementView: NSView {
         let level: ControlCenterStatusLevel
         let statusTitle: String
         switch extensionStatus.enabled {
-        case true:
+        case .some(true):
             level = .normal
             statusTitle = "Finder 扩展运行正常"
-        case false:
+        case .some(false):
             level = .attention
             statusTitle = "Finder 扩展尚未启用"
-        case nil:
+        case .none:
             level = .attention
             statusTitle = "Finder 扩展状态待确认"
         }

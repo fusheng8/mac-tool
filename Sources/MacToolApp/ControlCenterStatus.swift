@@ -66,13 +66,13 @@ struct ControlCenterStatusSnapshot: Equatable {
             finderLevel = .normal
         } else {
             switch input.finderExtensionEnabled {
-            case true:
+            case .some(true):
                 finderDetail = "扩展已启用"
                 finderLevel = .normal
-            case false:
+            case .some(false):
                 finderDetail = "扩展未授权"
                 finderLevel = .attention
-            case nil:
+            case .none:
                 finderDetail = "扩展状态待确认"
                 finderLevel = .attention
             }
