@@ -8,10 +8,9 @@ import UniformTypeIdentifiers
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private enum Layout {
-        static let sidebarWidth: CGFloat = 220
-        static let sidebarHorizontalInset: CGFloat = 16
-        static let maximumContentWidth: CGFloat = 812
-        static let contentWidth: CGFloat = 652
+        static let sidebarWidth: CGFloat = 192
+        static let sidebarHorizontalInset: CGFloat = 13
+        static let contentWidth: CGFloat = 660
         static let rowWidth: CGFloat = 620
     }
 
@@ -25,32 +24,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         case portManagement
         case appUninstall
         case permissions
-
-        var route: ControlCenterRoute {
-            switch self {
-            case .systemOverview: return .overview
-            case .settings, .permissions: return .preferences
-            case .displays: return .displays
-            case .clipboard: return .clipboard
-            case .archive: return .archive
-            case .contextMenu: return .finder
-            case .portManagement: return .ports
-            case .appUninstall: return .uninstall
-            }
-        }
-
-        init(route: ControlCenterRoute) {
-            switch route {
-            case .overview: self = .systemOverview
-            case .preferences: self = .settings
-            case .displays: self = .displays
-            case .clipboard: self = .clipboard
-            case .archive: self = .archive
-            case .finder: self = .contextMenu
-            case .ports: self = .portManagement
-            case .uninstall: self = .appUninstall
-            }
-        }
     }
 
     private enum GeneralSettingsAction: Int {
@@ -61,7 +34,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         case iCloudSync
         case retryClipboardKey
         case clearUndecryptableClipboard
-        case clearClipboardData
     }
 
     private enum PermissionAction: Int {
@@ -134,13 +106,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let statuses: RuntimeStatusStore
     private let clipboardController: ClipboardHistoryController
     private let ddc = DDCController()
-    private let loginItems = LoginItemController()
     private let ddcWriteQueue = DispatchQueue(label: "app.mac-tool.ddc-write", qos: .userInitiated)
     private let ddcWriteThrottleInterval: TimeInterval = 0.12
     private let onSave: () -> Void
     private let onClose: () -> Void
     private let onCheckForUpdates: () -> Void
-    private let onStartArchivePreset: (ArchivePresetID) -> Void
 
     private var profiles: [DisplayProfile]
     private var scannedDisplays: [DisplaySnapshot] = []
@@ -154,16 +124,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let sidebarSearchField = MacSearchField()
     private let sidebarNoResultsLabel = MacAssistantUI.caption("未找到相关功能", size: 12)
     private let refreshDisplaysButton = MacIconButton(symbolName: "arrow.clockwise")
-    private let systemOverviewSidebarButton = SidebarNavItem(title: "概览", symbolName: "rectangle.grid.2x2")
-    private let settingsSidebarButton = SidebarNavItem(title: "偏好设置", symbolName: "gearshape")
+    private let systemOverviewSidebarButton = SidebarNavItem(title: "系统概览", symbolName: "desktopcomputer")
+    private let settingsSidebarButton = SidebarNavItem(title: "设置", symbolName: "gearshape")
     private let displaySidebarButton = SidebarNavItem(title: "显示器", symbolName: "display")
     private let clipboardSidebarButton = SidebarNavItem(title: "剪贴板", symbolName: "doc.on.clipboard")
-    private let archiveSidebarButton = SidebarNavItem(title: "压缩工具", symbolName: "archivebox")
-    private let contextMenuSidebarButton = SidebarNavItem(title: "Finder 增强", symbolName: "folder")
-    private let portManagementSidebarButton = SidebarNavItem(title: "端口", symbolName: "network")
+    private let archiveSidebarButton = SidebarNavItem(title: "压缩/解压", symbolName: "archivebox")
+    private let contextMenuSidebarButton = SidebarNavItem(title: "右键菜单", symbolName: "cursorarrow.click.2")
+    private let portManagementSidebarButton = SidebarNavItem(title: "端口管理", symbolName: "network")
     private let appUninstallSidebarButton = SidebarNavItem(title: "应用卸载", symbolName: "trash")
-    private let efficiencyGroupLabel = SettingsWindowController.makeSidebarGroupLabel("效率工具")
-    private let systemGroupLabel = SettingsWindowController.makeSidebarGroupLabel("系统工具")
     private let titleLabel = NSTextField(labelWithString: "")
     private let closeDisplaySwitch = MacSwitchControl()
     private let clipboardEnabledSwitch = MacSwitchControl()
@@ -178,16 +146,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let archiveDefaultOpenerSwitch = MacSwitchControl()
     private let archiveAutoCloseExtractionProgressSwitch = MacSwitchControl()
     private let archiveCompressionLevelControl = MacNumberControl()
-    private let loginItemSwitch = MacSwitchControl()
     private let displayAutoReconnectSwitch = MacSwitchControl()
     private let displayReconnectDelayControl = MacNumberControl()
     private let displayConfirmCloseSwitch = MacSwitchControl()
     private let displayExternalOnlySwitch = MacSwitchControl()
-    private let displayMatchModeControl = MacSelectControl()
-    private let displayMatchThresholdControl = MacNumberControl()
     private var archiveFormatSwitches: [ArchiveFormat: MacSwitchControl] = [:]
     private let maxHistoryCountControl = MacNumberControl()
-    private let portManagementView = GroupedPortManagementView()
+    private let portManagementView = PortManagementView()
     private let applicationUninstallerView = ApplicationUninstallerView()
     private let resolutionPopup = MacSelectControl()
     private var portManagementWidthConstraint: NSLayoutConstraint?
@@ -227,7 +192,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         statuses: RuntimeStatusStore,
         clipboardController: ClipboardHistoryController,
         onCheckForUpdates: @escaping () -> Void = {},
-        onStartArchivePreset: @escaping (ArchivePresetID) -> Void = { _ in },
         onSave: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
@@ -238,22 +202,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         self.statuses = statuses
         self.clipboardController = clipboardController
         self.onCheckForUpdates = onCheckForUpdates
-        self.onStartArchivePreset = onStartArchivePreset
         self.onSave = onSave
         self.onClose = onClose
         self.profiles = store.profiles
 
-        if let routeValue = UserDefaults.standard.string(forKey: "controlCenter.lastRoute"),
-           let route = ControlCenterRoute(rawValue: routeValue) {
-            selectedSettingsPage = SettingsPage(route: route)
-        }
-
-        let savedWidth = UserDefaults.standard.double(forKey: "controlCenter.windowWidth")
-        let savedHeight = UserDefaults.standard.double(forKey: "controlCenter.windowHeight")
-        let initialWidth = max(920, savedWidth > 0 ? savedWidth : 1080)
-        let initialHeight = max(620, savedHeight > 0 ? savedHeight : 720)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: initialWidth, height: initialHeight),
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 520),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -262,7 +216,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.minSize = NSSize(width: 920, height: 620)
+        window.minSize = NSSize(width: 820, height: 480)
         super.init(window: window)
         window.delegate = self
         NotificationCenter.default.addObserver(
@@ -282,7 +236,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         configureClipboardPollIntervalControl()
         configureClipboardStructuredPreviewLimitControl()
         configureDisplayReconnectDelayControl()
-        configureDisplayMatchControls()
         configureArchiveCompressionLevelControl()
         buildUI()
         refreshDisplays()
@@ -299,23 +252,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func selectPage(_ page: SettingsPage) {
-        if !sidebarSearchField.text.isEmpty {
-            sidebarSearchField.clearText()
-        }
         guard selectedSettingsPage != page else {
             return
         }
         selectedSettingsPage = page
-        persistSelectedRoute()
         reloadCurrentPage()
-    }
-
-    func selectRoute(_ route: ControlCenterRoute) {
-        selectPage(SettingsPage(route: route))
-    }
-
-    private func persistSelectedRoute() {
-        UserDefaults.standard.set(selectedSettingsPage.route.rawValue, forKey: "controlCenter.lastRoute")
     }
 
     func refreshAfterDisplayChange() {
@@ -332,12 +273,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             restorePendingDisplayMode(reason: "设置窗口关闭")
         }
         onClose()
-    }
-
-    func windowDidResize(_ notification: Notification) {
-        guard let size = window?.contentLayoutRect.size else { return }
-        UserDefaults.standard.set(Double(size.width), forKey: "controlCenter.windowWidth")
-        UserDefaults.standard.set(Double(size.height), forKey: "controlCenter.windowHeight")
     }
 
     override func showWindow(_ sender: Any?) {
@@ -418,18 +353,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    private func configureDisplayMatchControls() {
-        displayMatchModeControl.items = ["严格匹配", "加权匹配"]
-        displayMatchModeControl.target = self
-        displayMatchModeControl.action = #selector(displayMatchModeChanged)
-        displayMatchThresholdControl.minValue = 1
-        displayMatchThresholdControl.maxValue = 100
-        displayMatchThresholdControl.increment = 5
-        displayMatchThresholdControl.onChange = { [weak self] _ in
-            _ = self?.saveSelectedProfile()
-        }
-    }
-
     private func configureArchiveCompressionLevelControl() {
         archiveCompressionLevelControl.minValue = 0
         archiveCompressionLevelControl.maxValue = 9
@@ -487,29 +410,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         configureSidebarButton(portManagementSidebarButton, page: .portManagement)
         configureSidebarButton(appUninstallSidebarButton, page: .appUninstall)
 
-        let stack = NSStackView(views: [
-            sidebarSearchField,
-            systemOverviewSidebarButton,
-            efficiencyGroupLabel,
-            clipboardSidebarButton,
-            contextMenuSidebarButton,
-            archiveSidebarButton,
-            systemGroupLabel,
-            displaySidebarButton,
-            portManagementSidebarButton,
-            appUninstallSidebarButton,
-            settingsSidebarButton,
-            sidebarNoResultsLabel
-        ])
+        let stack = NSStackView(views: [sidebarSearchField, systemOverviewSidebarButton, displaySidebarButton, clipboardSidebarButton, archiveSidebarButton, contextMenuSidebarButton, portManagementSidebarButton, appUninstallSidebarButton, settingsSidebarButton, sidebarNoResultsLabel])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.distribution = .fill
         stack.spacing = 6
-        stack.setCustomSpacing(18, after: systemOverviewSidebarButton)
-        stack.setCustomSpacing(8, after: efficiencyGroupLabel)
-        stack.setCustomSpacing(18, after: archiveSidebarButton)
-        stack.setCustomSpacing(8, after: systemGroupLabel)
-        stack.setCustomSpacing(18, after: appUninstallSidebarButton)
         stack.detachesHiddenViews = true
         stack.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(stack)
@@ -517,7 +422,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: Layout.sidebarHorizontalInset),
             stack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -Layout.sidebarHorizontalInset),
-            stack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 58),
+            stack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 52),
             sidebarSearchField.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
         updateSidebarSelection()
@@ -532,18 +437,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         button.widthAnchor.constraint(equalToConstant: Layout.sidebarWidth - Layout.sidebarHorizontalInset * 2).isActive = true
     }
 
-    private static func makeSidebarGroupLabel(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 11, weight: .medium)
-        label.textColor = .tertiaryLabelColor
-        label.alignment = .left
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: Layout.sidebarWidth - Layout.sidebarHorizontalInset * 2).isActive = true
-        return label
-    }
-
     private func buildMainArea() -> NSView {
-        let main = LayerBackedView(backgroundColor: MacAssistantUI.Color.content)
+        let main = LayerBackedView(backgroundColor: NSColor.white.withAlphaComponent(0.56))
         main.translatesAutoresizingMaskIntoConstraints = false
 
         let header = buildHeader()
@@ -555,7 +450,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             header.leadingAnchor.constraint(equalTo: main.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: main.trailingAnchor),
             header.topAnchor.constraint(equalTo: main.topAnchor),
-            header.heightAnchor.constraint(equalToConstant: 76),
+            header.heightAnchor.constraint(equalToConstant: 52),
 
             scrollView.leadingAnchor.constraint(equalTo: main.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: main.trailingAnchor),
@@ -567,7 +462,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func buildHeader() -> NSView {
-        let header = LayerBackedView(backgroundColor: MacAssistantUI.Color.content)
+        let header = LayerBackedView(backgroundColor: NSColor.white.withAlphaComponent(0.44))
         header.wantsLayer = true
         header.layer?.borderColor = MacAssistantUI.Color.hairline.cgColor
         header.layer?.borderWidth = 0
@@ -579,7 +474,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayTabsStack.spacing = 4
         displayTabsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        pageTitleLabel.font = .systemFont(ofSize: 22, weight: .bold)
+        pageTitleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         pageTitleLabel.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(pageTitleLabel)
 
@@ -589,7 +484,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         header.addSubview(refreshDisplaysButton)
 
         NSLayoutConstraint.activate([
-            pageTitleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 32),
+            pageTitleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 24),
             pageTitleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             refreshDisplaysButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -18),
             refreshDisplaysButton.centerYAnchor.constraint(equalTo: header.centerYAnchor)
@@ -606,18 +501,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         contentStack.orientation = .vertical
-        contentStack.alignment = .leading
+        contentStack.alignment = .centerX
         contentStack.spacing = 24
-        contentStack.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 32, right: 0)
+        contentStack.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
         let documentView = FlippedView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
         documentView.addSubview(contentStack)
         scrollView.documentView = documentView
-
-        let adaptiveContentWidth = contentStack.widthAnchor.constraint(equalTo: documentView.widthAnchor, constant: -48)
-        adaptiveContentWidth.priority = NSLayoutConstraint.Priority.defaultHigh
 
         NSLayoutConstraint.activate([
             documentView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
@@ -627,10 +519,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             documentView.heightAnchor.constraint(greaterThanOrEqualTo: contentStack.heightAnchor),
 
             contentStack.centerXAnchor.constraint(equalTo: documentView.centerXAnchor),
-            contentStack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 0),
+            contentStack.topAnchor.constraint(equalTo: documentView.topAnchor),
             contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
-            adaptiveContentWidth,
-            contentStack.widthAnchor.constraint(lessThanOrEqualToConstant: Layout.maximumContentWidth)
+            contentStack.widthAnchor.constraint(equalToConstant: Layout.contentWidth),
+            contentStack.widthAnchor.constraint(lessThanOrEqualTo: documentView.widthAnchor, constant: -48)
         ])
         return scrollView
     }
@@ -680,7 +572,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func reloadCurrentPage() {
-        persistSelectedRoute()
         updateSidebarSelection()
         updateHeader()
         switch selectedSettingsPage {
@@ -710,19 +601,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageTitleLabel.isHidden = false
         switch selectedSettingsPage {
         case .systemOverview:
-            pageTitleLabel.stringValue = "概览"
+            pageTitleLabel.stringValue = "系统概览"
         case .settings, .permissions:
-            pageTitleLabel.stringValue = "偏好设置"
+            pageTitleLabel.stringValue = "设置"
         case .displays:
-            pageTitleLabel.stringValue = "显示器"
+            pageTitleLabel.stringValue = "显示器设置"
         case .clipboard:
             pageTitleLabel.stringValue = "剪贴板历史"
         case .archive:
-            pageTitleLabel.stringValue = "压缩工具"
+            pageTitleLabel.stringValue = "压缩/解压"
         case .contextMenu:
-            pageTitleLabel.stringValue = "Finder 增强"
+            pageTitleLabel.stringValue = "Finder 右键菜单扩展"
         case .portManagement:
-            pageTitleLabel.stringValue = "端口"
+            pageTitleLabel.stringValue = "端口管理"
         case .appUninstall:
             pageTitleLabel.stringValue = "应用卸载"
         }
@@ -759,12 +650,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         let hasMatches = matches.contains { $0.2 }
         sidebarNoResultsLabel.isHidden = hasMatches
-        efficiencyGroupLabel.isHidden = clipboardSidebarButton.isHidden
-            && archiveSidebarButton.isHidden
-            && contextMenuSidebarButton.isHidden
-        systemGroupLabel.isHidden = displaySidebarButton.isHidden
-            && portManagementSidebarButton.isHidden
-            && appUninstallSidebarButton.isHidden
 
         if !matches.contains(where: { $0.1 == selectedSettingsPage && $0.2 }),
            let firstMatch = matches.first(where: { $0.2 }) {
@@ -804,7 +689,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func styleSidebarButton(_ button: SidebarNavItem, selected: Bool) {
-        button.setSelected(selected, accentColor: MacAssistantUI.Color.blue)
+        let tint: NSColor
+        switch SettingsPage(rawValue: button.tag) {
+        case .systemOverview:
+            tint = MacAssistantUI.Color.green
+        case .settings:
+            tint = MacAssistantUI.Color.blue
+        case .displays:
+            tint = MacAssistantUI.Color.blue
+        case .clipboard:
+            tint = MacAssistantUI.Color.amber
+        case .archive:
+            tint = MacAssistantUI.Color.purple
+        case .contextMenu:
+            tint = MacAssistantUI.Color.purple
+        case .portManagement:
+            tint = MacAssistantUI.Color.blue
+        case .appUninstall:
+            tint = NSColor.systemRed
+        case .permissions:
+            tint = MacAssistantUI.Color.green
+        case .none:
+            tint = MacAssistantUI.Color.blue
+        }
+        button.setSelected(selected, accentColor: tint)
     }
 
     private func rebuildDisplayTabs() {
@@ -875,147 +783,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         isReloadingUI = true
         defer { isReloadingUI = false }
 
-        loadControls(profile: profile, display: display)
         titleLabel.stringValue = ""
-        let cards = displayDeviceCards()
-        contentStack.addArrangedSubview(cards)
-        cards.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
-        contentStack.addArrangedSubview(displayConsoleSection(display: display))
-        contentStack.addArrangedSubview(displaySafetySection(display: display))
-        let advanced = displayAdvancedDisclosure(display: display, profile: profile)
-        contentStack.addArrangedSubview(advanced)
-        advanced.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
-    }
+        contentStack.addArrangedSubview(displaySelector())
+        contentStack.addArrangedSubview(displaySummary(display: display, profile: profile))
+        contentStack.addArrangedSubview(displayDetailsSection(display: display, profile: profile))
+        contentStack.addArrangedSubview(settingsSection(display: display))
 
-    private func displayDeviceCards() -> NSView {
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.heightAnchor.constraint(equalToConstant: 92).isActive = true
-
-        let scroll = NSScrollView()
-        scroll.drawsBackground = false
-        scroll.hasHorizontalScroller = false
-        scroll.hasVerticalScroller = false
-        scroll.horizontalScrollElasticity = .allowed
-        scroll.verticalScrollElasticity = .none
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        let document = NSView()
-        document.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(stack)
-        scroll.documentView = document
-
-        for (index, display) in scannedDisplays.enumerated() {
-            let ddcText: String
-            if display.isBuiltIn {
-                ddcText = "系统控制"
-            } else if canUseDDC(display: display) {
-                ddcText = "DDC 可检测"
-            } else {
-                ddcText = "DDC 不可用"
-            }
-            let card = DisplayDeviceCardControl(
-                title: suggestedProfileName(for: display),
-                subtitle: display.isActive ? "已连接 · \(ddcText)" : "当前离线",
-                symbolName: display.isBuiltIn ? "laptopcomputer" : "display",
-                statusText: display.isActive ? "在线" : "离线",
-                statusLevel: display.isActive ? .normal : .attention,
-                selected: index == selectedDisplayIndex
-            )
-            card.tag = index
-            card.target = self
-            card.action = #selector(selectDisplayCard(_:))
-            stack.addArrangedSubview(card)
-        }
-
-        container.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: container.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
-            document.bottomAnchor.constraint(equalTo: scroll.contentView.bottomAnchor),
-            document.heightAnchor.constraint(equalTo: scroll.contentView.heightAnchor),
-            document.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),
-            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            stack.centerYAnchor.constraint(equalTo: document.centerYAnchor)
-        ])
-        return container
-    }
-
-    private func displayConsoleSection(display: DisplaySnapshot) -> NSView {
-        var rows: [NSView] = []
-        rows.append(contentsOf: ddcQuickControlRows(display: display).filter { view in
-            guard let label = view as? NSTextField else { return true }
-            return label !== ddcStatusLabel
-        })
-        rows.append(contentsOf: resolutionControlRows(display: display))
-        rows.append(switchRow(
-            title: "临时关闭显示器",
-            detail: "关闭前会检查至少保留一台可用显示器，并按安全策略自动恢复。",
-            control: closeDisplaySwitch
-        ))
-        return section(title: "显示器控制台", rows: rows)
-    }
-
-    private func displaySafetySection(display: DisplaySnapshot) -> NSView {
-        section(title: "安全与恢复", rows: [
-            switchRow(
-                title: "只允许关闭外接显示器",
-                detail: "关闭后可操作 MacBook 内置显示屏；仍会保留最后一块可用屏幕并执行恢复保护。",
-                control: displayExternalOnlySwitch
-            ),
-            switchRow(title: "关闭前二次确认", detail: "避免误触造成屏幕短暂黑屏。", control: displayConfirmCloseSwitch),
-            switchRow(title: "自动恢复", detail: "关闭显示器后按设定时间自动重新连接。", control: displayAutoReconnectSwitch),
-            controlRow(title: "恢复倒计时", detail: "自动恢复开启时生效，单位秒。", control: secondsControl(displayReconnectDelayControl)),
-            displayTestCloseRow(display: display),
-            recoveryStatusRow(display: display),
-            displayRecoveryFallbackRow()
-        ])
-    }
-
-    private func displayAdvancedDisclosure(display: DisplaySnapshot, profile: DisplayProfile) -> NSView {
-        let disclosure = MacDisclosureSection(
-            title: "高级信息",
-            detail: "EDID、厂商标识、匹配方式与诊断信息",
-            symbolName: "info.circle"
-        )
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 0
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        let rows: [NSView] = [
-            detailGridRow(display: display, profile: profile),
-            controlRow(
-                title: "识别方式",
-                detail: "严格匹配使用稳定标识；扩展坞导致标识变化时可使用加权匹配。",
-                control: displayMatchModeControl
-            ),
-            controlRow(
-                title: "加权阈值",
-                detail: "仅加权匹配时生效；分数不足或并列时不会自动操作显示器。",
-                control: displayMatchThresholdControl
-            ),
-            detailActionsRow(display: display)
-        ]
-        for (index, row) in rows.enumerated() {
-            if index > 0 {
-                let line = MacAssistantUI.separator()
-                stack.addArrangedSubview(line)
-                line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            }
-            stack.addArrangedSubview(row)
-        }
-        disclosure.setContent(stack)
-        return disclosure
+        loadControls(profile: profile, display: display)
     }
 
     private func displaySummary(display: DisplaySnapshot, profile: DisplayProfile) -> NSView {
@@ -1062,34 +836,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             contentStack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        stopSystemOverviewTimer()
         systemBasicInfoValueLabels.removeAll()
         previousSystemProcessorTicks = nil
 
-        let clipboard = store.clipboard
-        let finderStatus = SystemCapabilities.finderExtensionStatus().enabled
-        let statusSnapshot = ControlCenterStatusSnapshot.make(input: ControlCenterStatusInput(
-            clipboardEnabled: clipboard.enabled,
-            clipboardPaused: clipboard.recordingPaused,
-            clipboardPrivacyExclusionsActive: clipboard.excludeKnownPasswordManagers || !clipboard.excludedBundleIdentifiers.isEmpty,
-            finderFeatureEnabled: store.contextMenu.enabled,
-            finderExtensionEnabled: finderStatus,
-            connectedDisplayCount: scannedDisplays.filter(\.isActive).count,
-            pendingDisplayRecoveryCount: store.pendingReconnects.count,
-            archiveFormatCount: store.archive.enabledFormats.count
-        ))
-        let overview = ControlCenterOverviewView(
-            snapshot: statusSnapshot,
-            systemSnapshot: SystemInfoProvider.snapshot()
-        )
-        overview.onOpenRoute = { [weak self] route in
-            self?.selectRoute(route)
-        }
-        overview.onOpenClipboardPanel = { [weak self] in
-            self?.clipboardController.showHistoryPanel()
-        }
-        contentStack.addArrangedSubview(overview)
-        overview.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+        let snapshot = SystemInfoProvider.snapshot()
+        contentStack.addArrangedSubview(systemBasicInfoSection(snapshot: snapshot))
+        contentStack.addArrangedSubview(systemChartsSection())
+        applySystemOverviewSnapshot(snapshot)
+        updateSystemOverviewTimer()
     }
 
     private func reloadClipboardSettings() {
@@ -1098,11 +852,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             view.removeFromSuperview()
         }
         loadClipboardControls()
-        let managementView = ClipboardManagementView(controller: clipboardController)
-        contentStack.addArrangedSubview(managementView)
-        managementView.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
-        let settingsTitle = MacAssistantUI.title("页面设置", size: 17, weight: .semibold)
-        contentStack.addArrangedSubview(settingsTitle)
         contentStack.addArrangedSubview(clipboardSection())
         contentStack.addArrangedSubview(clipboardShortcutSection())
     }
@@ -1113,126 +862,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             view.removeFromSuperview()
         }
         archiveFormatSwitches.removeAll()
-        configureArchivePageControls()
-        contentStack.addArrangedSubview(archiveDefaultBehaviorSection())
-        contentStack.addArrangedSubview(archivePresetsSection())
-        let advanced = archiveAdvancedDisclosure()
-        contentStack.addArrangedSubview(advanced)
-        advanced.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+        contentStack.addArrangedSubview(archiveOptionsSection())
+        contentStack.addArrangedSubview(archiveFormatsSection())
         contentStack.addArrangedSubview(archiveContextMenuSection())
-    }
-
-    private func configureArchivePageControls() {
-        archiveStripMacMetadataSwitch.state = store.archive.stripMacMetadataWhenCompressing ? .on : .off
-        archiveStripMacMetadataSwitch.target = self
-        archiveStripMacMetadataSwitch.action = #selector(controlChanged(_:))
-        archiveDefaultOpenerSwitch.state = store.archive.registerAsDefaultArchiveOpener ? .on : .off
-        archiveDefaultOpenerSwitch.target = self
-        archiveDefaultOpenerSwitch.action = #selector(controlChanged(_:))
-        archiveAutoCloseExtractionProgressSwitch.state = store.archive.autoCloseProgressWindowAfterExtraction ? .on : .off
-        archiveAutoCloseExtractionProgressSwitch.target = self
-        archiveAutoCloseExtractionProgressSwitch.action = #selector(controlChanged(_:))
-        archiveCompressionLevelControl.value = ArchiveConfig.normalizedCompressionLevel(store.archive.defaultCompressionLevel)
-    }
-
-    private func archiveDefaultBehaviorSection() -> NSView {
-        section(title: "默认行为", rows: [
-            hintRow("智能解压会根据压缩包内容选择当前目录或独立文件夹；遇到同名文件始终保留两者，不会覆盖已有内容。"),
-            switchRow(
-                title: "解压完成后自动关闭进度",
-                detail: "成功后短暂停留完成状态，再自动收起进度窗口。",
-                control: archiveAutoCloseExtractionProgressSwitch
-            )
-        ])
-    }
-
-    private func archivePresetsSection() -> NSView {
-        section(title: "压缩预设", rows: ArchivePreset.all.map(archivePresetRow))
-    }
-
-    private func archivePresetRow(_ preset: ArchivePreset) -> NSView {
-        let buttonTitle: String
-        switch preset.id {
-        case .universalZip, .sourcePackage: buttonTitle = "选择文件"
-        case .encryptedArchive: buttonTitle = "设置密码"
-        case .custom: buttonTitle = "打开选项"
-        }
-        let button = MacTextButton(title: buttonTitle, symbolName: "chevron.right", role: .primary)
-        button.tag = ArchivePreset.all.firstIndex(where: { $0.id == preset.id }) ?? 0
-        button.target = self
-        button.action = #selector(archivePresetPressed(_:))
-
-        let row = NSView()
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: Layout.rowWidth).isActive = true
-        row.heightAnchor.constraint(equalToConstant: 68).isActive = true
-        let icon = NSImageView(image: MacAssistantUI.symbol(preset.symbolName, pointSize: 17, weight: .medium) ?? NSImage())
-        icon.contentTintColor = MacAssistantUI.Color.blue
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        let title = MacAssistantUI.title(preset.title, size: 13, weight: .semibold)
-        let detail = MacAssistantUI.caption(preset.detail, size: 11)
-        detail.lineBreakMode = .byTruncatingTail
-        let text = NSStackView(views: [title, detail])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 4
-        text.translatesAutoresizingMaskIntoConstraints = false
-        row.addSubview(icon)
-        row.addSubview(text)
-        row.addSubview(button)
-        NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 22),
-            icon.heightAnchor.constraint(equalToConstant: 22),
-            text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
-            text.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            text.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -12),
-            button.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            button.centerYAnchor.constraint(equalTo: row.centerYAnchor)
-        ])
-        return row
-    }
-
-    private func archiveAdvancedDisclosure() -> NSView {
-        let disclosure = MacDisclosureSection(
-            title: "高级能力",
-            detail: "支持格式、元数据清理、压缩等级与默认打开方式",
-            symbolName: "gearshape.2"
-        )
-        let rows: [NSView] = [
-            switchRow(
-                title: "压缩时清理 macOS 元数据",
-                detail: "跳过 .DS_Store 和常见 Finder 元数据文件。",
-                control: archiveStripMacMetadataSwitch
-            ),
-            switchRow(
-                title: "设为压缩包默认打开方式",
-                detail: "接管 ZIP、7Z、RAR 等受支持压缩包。",
-                control: archiveDefaultOpenerSwitch
-            ),
-            controlRow(
-                title: "自定义压缩默认等级",
-                detail: "完整选项流程的默认值，范围 0 到 9。",
-                control: archiveCompressionLevelControl
-            )
-        ] + ArchiveFormat.allCases.map(archiveFormatRow) + [archiveDependencySummaryRow()]
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 0
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        for (index, row) in rows.enumerated() {
-            if index > 0 {
-                let line = MacAssistantUI.separator()
-                stack.addArrangedSubview(line)
-                line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            }
-            stack.addArrangedSubview(row)
-        }
-        disclosure.setContent(stack)
-        return disclosure
     }
 
     private func reloadGeneralSettings() {
@@ -1240,12 +872,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             contentStack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        contentStack.addArrangedSubview(applicationPreferencesSection())
+        contentStack.addArrangedSubview(versionSection())
         contentStack.addArrangedSubview(configManagementSection())
         contentStack.addArrangedSubview(iCloudSettingsSection())
         contentStack.addArrangedSubview(permissionsSection())
         contentStack.addArrangedSubview(diagnosticsSection())
-        contentStack.addArrangedSubview(dangerZoneSection())
+        contentStack.addArrangedSubview(permissionHintSection())
     }
 
     private func reloadPermissionsSettings() {
@@ -1263,20 +895,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             contentStack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        let finderView = FinderEnhancementView(
-            config: store.contextMenu,
-            extensionStatus: SystemCapabilities.finderExtensionStatus()
-        )
-        finderView.onSave = { [weak self] config in
-            guard let self else { return }
-            self.store.contextMenu = config
-            self.onSave()
-        }
-        finderView.onRepairExtension = { [weak self] in
-            self?.selectRoute(.preferences)
-        }
-        contentStack.addArrangedSubview(finderView)
-        finderView.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+        loadContextMenuControls()
+        contentStack.addArrangedSubview(contextMenuGeneralSection())
+        contentStack.addArrangedSubview(contextMenuItemsSection())
     }
 
     private func reloadPortManagementSettings() {
@@ -1314,20 +935,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func settingsSection(display: DisplaySnapshot) -> NSView {
         var rows: [NSView] = [
-            controlRow(
-                title: "识别方式",
-                detail: "严格匹配使用最强稳定标识；加权匹配用于扩展坞或系统更新后标识发生变化的情况。",
-                control: displayMatchModeControl
-            ),
-            controlRow(
-                title: "加权阈值",
-                detail: "仅加权匹配时生效；分数不足或存在并列候选时不会自动操作显示器。",
-                control: displayMatchThresholdControl
-            ),
             switchRow(title: "关闭此显示器", detail: "开关显示当前实际关闭状态；安全兜底时会临时保持打开。", control: closeDisplaySwitch),
             switchRow(
                 title: "只允许关闭外接显示器",
-                detail: "关闭后可操作 MacBook 内置显示屏；仍会保留最后一块可用屏幕并执行恢复保护。",
+                detail: "关闭后可操作 MacBook 内置显示屏；仍会确保至少保留一台可用显示器。",
                 control: displayExternalOnlySwitch
             ),
             switchRow(title: "关闭前二次确认", detail: "避免误触导致屏幕短暂黑屏。", control: displayConfirmCloseSwitch),
@@ -1700,7 +1311,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func updateSystemOverviewTimer() {
-        stopSystemOverviewTimer()
+        if selectedSettingsPage == .systemOverview && window?.isVisible == true {
+            startSystemOverviewTimer()
+        } else {
+            stopSystemOverviewTimer()
+        }
     }
 
     private func startSystemOverviewTimer() {
@@ -1865,39 +1480,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                     settingsActionButton(title: "检测更新", symbolName: "arrow.clockwise", action: .checkForUpdates)
                 ]
             )
-        ])
-    }
-
-    private func applicationPreferencesSection() -> NSView {
-        loginItemSwitch.state = loginItems.isEnabled ? .on : .off
-        loginItemSwitch.target = self
-        loginItemSwitch.action = #selector(loginItemChanged)
-        return section(title: "应用与更新", rows: [
-            switchRow(
-                title: "登录时启动",
-                detail: "在登录 macOS 后启动菜单栏控制中心。",
-                control: loginItemSwitch
-            ),
-            settingsActionRow(
-                title: "软件更新",
-                detail: currentVersionText(),
-                buttons: [
-                    settingsActionButton(title: "检测更新", symbolName: "arrow.clockwise", action: .checkForUpdates)
-                ]
-            )
-        ])
-    }
-
-    private func dangerZoneSection() -> NSView {
-        section(title: "危险操作", rows: [
-            settingsActionRow(
-                title: "清除剪贴板数据",
-                detail: "永久清除本机加密历史、缩略图和缓存；收藏内容也会删除。",
-                buttons: [
-                    settingsActionButton(title: "清除全部数据", symbolName: "trash", action: .clearClipboardData, role: .destructive)
-                ]
-            ),
-            hintRow("配置导入与 iCloud 恢复会覆盖当前配置，执行前均会再次确认。", compact: true)
         ])
     }
 
@@ -2154,7 +1736,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         icon.contentTintColor = level == 0 ? .systemBlue : .secondaryLabelColor
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        let title = NSTextField(labelWithString: item.displayTitle)
+        let title = NSTextField(labelWithString: item.id.title)
         title.font = .systemFont(ofSize: 13, weight: level == 0 ? .semibold : .regular)
         title.textColor = parentEnabled ? .labelColor : .secondaryLabelColor
         title.translatesAutoresizingMaskIntoConstraints = false
@@ -2660,13 +2242,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
-    private func settingsActionButton(
-        title: String,
-        symbolName: String,
-        action: GeneralSettingsAction,
-        role: MacTextButton.Role = .primary
-    ) -> MacTextButton {
-        let button = MacTextButton(title: title, symbolName: symbolName, role: role)
+    private func settingsActionButton(title: String, symbolName: String, action: GeneralSettingsAction) -> MacTextButton {
+        let button = MacTextButton(title: title, symbolName: symbolName, role: .primary)
         button.target = self
         button.action = #selector(generalSettingsActionPressed(_:))
         button.tag = action.rawValue
@@ -2724,9 +2301,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func loadControls(profile: DisplayProfile, display: DisplaySnapshot) {
-        displayMatchModeControl.selectedIndex = profile.matchMode == .strict ? 0 : 1
-        displayMatchThresholdControl.value = DisplayMatchRule.normalizedThreshold(profile.match.matchThreshold)
-        displayMatchThresholdControl.isEnabled = profile.matchMode == .weighted
         closeDisplaySwitch.state = display.isActive ? .off : .on
         closeDisplaySwitch.isEnabled = display.runtimeDisplayID != 0 && disconnect.backendAvailability.available
         if let reason = disconnect.backendAvailability.reason, !disconnect.backendAvailability.available {
@@ -2777,8 +2351,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             id: existing.id,
             enabled: closeEnabled,
             name: suggestedProfileName(for: display),
-            matchMode: displayMatchModeControl.selectedIndex == 1 ? .weighted : .strict,
-            match: matchRule(for: display, threshold: displayMatchThresholdControl.value),
+            matchMode: .strict,
+            match: matchRule(for: display),
             colorLock: colorLock,
             disconnect: DisconnectConfig(
                 enabled: closeEnabled,
@@ -2808,12 +2382,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         isReloadingUI = true
         closeDisplaySwitch.state = isOn ? .on : .off
         isReloadingUI = false
-    }
-
-    @objc private func displayMatchModeChanged() {
-        guard !isReloadingUI else { return }
-        displayMatchThresholdControl.isEnabled = displayMatchModeControl.selectedIndex == 1
-        _ = saveSelectedProfile()
     }
 
     private func saveClipboardConfig(hotKey: HotKeyConfig? = nil) {
@@ -2968,6 +2536,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             }
             do {
                 let display = try disconnect.disconnect(profile: profile, allProfiles: profiles) { [weak self] display in
+                    guard profile.disconnect.autoReconnect else { return }
                     self?.store.addPendingReconnect(PendingReconnect(
                         profileId: profile.id,
                         displaySnapshot: display,
@@ -3101,7 +2670,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         )
     }
 
-    private func matchRule(for display: DisplaySnapshot, threshold: Int = 80) -> DisplayMatchRule {
+    private func matchRule(for display: DisplaySnapshot) -> DisplayMatchRule {
         DisplayMatchRule(
             displayName: display.displayName,
             edidUUID: display.edidUUID,
@@ -3111,7 +2680,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             manufacturer: display.manufacturer,
             alphanumericSerial: display.alphanumericSerial,
             ioLocation: display.ioLocation,
-            matchThreshold: DisplayMatchRule.normalizedThreshold(threshold)
+            matchThreshold: 80
         )
     }
 
@@ -3593,11 +3162,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    @objc private func archivePresetPressed(_ sender: MacTextButton) {
-        guard ArchivePreset.all.indices.contains(sender.tag) else { return }
-        onStartArchivePreset(ArchivePreset.all[sender.tag].id)
-    }
-
     @objc private func generalSettingsActionPressed(_ sender: MacTextButton) {
         guard let action = GeneralSettingsAction(rawValue: sender.tag) else { return }
         switch action {
@@ -3618,20 +3182,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             guard confirmClipboardHistoryClear() else { return }
             clipboardController.clearUndecryptableHistory()
             reloadCurrentPage()
-        case .clearClipboardData:
-            guard confirmClipboardHistoryClear() else { return }
-            clipboardController.clearAll()
-            reloadCurrentPage()
-        }
-    }
-
-    @objc private func loginItemChanged() {
-        do {
-            try loginItems.setEnabled(loginItemSwitch.state == .on)
-            loginItemSwitch.state = loginItems.isEnabled ? .on : .off
-        } catch {
-            loginItemSwitch.state = loginItems.isEnabled ? .on : .off
-            showAlert(title: "无法更改登录项", message: error.localizedDescription)
         }
     }
 
@@ -3870,12 +3420,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @objc private func selectDisplayTab(_ sender: MacSegmentButton) {
-        selectedDisplayIndex = sender.tag
-        rebuildDisplayTabs()
-        reloadSelectedDisplay()
-    }
-
-    @objc private func selectDisplayCard(_ sender: DisplayDeviceCardControl) {
         selectedDisplayIndex = sender.tag
         rebuildDisplayTabs()
         reloadSelectedDisplay()

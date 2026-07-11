@@ -277,9 +277,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onCheckForUpdates: { [weak self] in
                 self?.updaterController.checkForUpdates(nil)
             },
-            onStartArchivePreset: { [weak self] presetID in
-                self?.startArchivePreset(presetID)
-            },
             onConfigurationChanged: { [weak self] in
                 self?.automation.updateBackgroundActivity()
                 self?.startDisplayRestoreWatchdogIfNeeded()
@@ -433,25 +430,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if url.host == "open",
            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
            let page = components.queryItems?.first(where: { $0.name == "page" })?.value {
-            let aliases: [String: ControlCenterRoute] = [
-                "overview": .overview,
-                "clipboard": .clipboard,
-                "finder": .finder,
-                "archive": .archive,
-                "displays": .displays,
-                "ports": .ports,
-                "port-management": .ports,
-                "uninstall": .uninstall,
-                "preferences": .preferences,
-                "settings": .preferences
-            ]
-            if let route = aliases[page] {
-                if route == .ports {
-                    indexSpotlightActionsIfNeeded()
-                }
-                menuBar.openControlCenter(route)
-            } else {
-                AppLogger.shared.error("未知控制中心路由：\(page)")
+            switch page {
+            case "displays":
+                menuBar.openDisplaySettings()
+            case "port-management":
+                indexSpotlightActionsIfNeeded()
+                menuBar.openPortManagement()
+            case "archive":
+                menuBar.openArchiveSettings()
+            default:
+                break
             }
             return
         }
@@ -657,31 +645,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             self.compressionOptionsWindowController = controller
             controller.show()
-        }
-    }
-
-    private func startArchivePreset(_ presetID: ArchivePresetID) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let preset = ArchivePreset.preset(presetID)
-            let panel = NSOpenPanel()
-            panel.title = "\(preset.title)：选择要压缩的文件或文件夹"
-            panel.prompt = "选择"
-            panel.canChooseFiles = true
-            panel.canChooseDirectories = true
-            panel.allowsMultipleSelection = true
-            panel.canCreateDirectories = false
-            guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
-
-            let urls = panel.urls
-            guard let options = preset.compressionOptions(
-                archiveName: urls.count == 1 ? urls[0].lastPathComponent : "压缩包",
-                wrapInFolder: urls.count > 1
-            ) else {
-                self.showCompressionOptions(urls: urls)
-                return
-            }
-            self.performCustomCompression(urls: urls, options: options)
         }
     }
 

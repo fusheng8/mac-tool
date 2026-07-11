@@ -115,11 +115,6 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     func showPanel() {
-        // A clipboard panel is a fresh lookup session. Keeping an old query here
-        // can make newly copied items appear to be missing when the panel reopens.
-        if window?.isVisible != true {
-            resetSearch()
-        }
         ignoreOutsideClicksUntil = Date.timeIntervalSinceReferenceDate + 0.35
         resetPanelSize()
         positionAtTopRight()
@@ -746,11 +741,6 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         return "app-name:\(item.sourceApplicationName)"
     }
 
-    private func resetSearch() {
-        searchResults = []
-        searchField.clearText()
-    }
-
     @objc private func filterButtonPressed(_ sender: AppFilterButton) {
         selectApplicationFilter(sender.bundleId)
     }
@@ -1170,14 +1160,6 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
-        // The panel-wide event tap receives a Space key before AppKit lets the
-        // input method confirm marked text. Let the search field consume that
-        // event first, otherwise the default Space shortcut opens Quick Look
-        // while a Chinese input method is committing a candidate.
-        if window?.firstResponder === searchField, searchField.hasMarkedText() {
-            return searchField.handleTextInput(from: event)
-        }
-
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if event.keyCode == 53 {
             window?.orderOut(nil)

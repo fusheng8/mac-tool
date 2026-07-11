@@ -175,6 +175,7 @@ final class ProductSafetyTests: XCTestCase {
         XCTAssertEqual(ClipboardConfig.defaultValue.retentionDays, 30)
         XCTAssertFalse(DisconnectConfig.defaultValue.enabled)
         XCTAssertFalse(DisconnectConfig.defaultValue.allowSoftDisconnect)
+        XCTAssertFalse(DisconnectConfig.defaultValue.autoReconnect)
         XCTAssertTrue(DisconnectConfig.defaultValue.externalOnly)
         XCTAssertTrue(DisconnectConfig.defaultValue.confirmBeforeDisconnect)
     }
@@ -328,6 +329,57 @@ final class ProductSafetyTests: XCTestCase {
         try store.completeOnboarding(clipboardEnabled: true, displayAutomationApproved: false)
         XCTAssertTrue(store.backgroundTasksAllowed)
         XCTAssertFalse(store.displayAutomationAllowed)
+    }
+
+    func testV3StoreMigrationKeepsDisplayClosedAndClearsRecoveryQueue() throws {
+        let root = try temporaryDirectory()
+        let configURL = root.appendingPathComponent("config.json")
+        let stateURL = root.appendingPathComponent("state.json")
+        let profile = Self.profile(id: "built-in")
+        let legacyConfig = AppConfig(
+            schemaVersion: 3,
+            profiles: [profile],
+            clipboard: .defaultValue,
+            archive: .defaultValue,
+            contextMenu: .defaultValue
+        )
+        let display = DisplaySnapshot(
+            runtimeDisplayID: 1,
+            displayName: "内置显示屏",
+            edidUUID: "",
+            vendorId: "0x0610",
+            modelId: "0xa05f",
+            serialNumber: "1",
+            manufacturer: "Apple",
+            alphanumericSerial: "",
+            isBuiltIn: true,
+            isActive: false,
+            ioLocation: "built-in"
+        )
+        let legacyState = AppState(
+            pendingReconnects: [PendingReconnect(
+                profileId: profile.id,
+                displaySnapshot: display,
+                reason: "user_requested_disconnect",
+                autoReconnect: true
+            )],
+            lastSeenDisplays: [display],
+            onboardingVersion: ProfileStore.onboardingVersion,
+            privacyNoticeVersion: ProfileStore.privacyNoticeVersion,
+            displayAutomationConsentVersion: ProfileStore.displayConsentVersion,
+            displayAutomationApproved: true
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(legacyConfig).write(to: configURL)
+        try encoder.encode(legacyState).write(to: stateURL)
+
+        let store = ProfileStore(configURL: configURL, stateURL: stateURL, finderSyncConfigURL: nil)
+
+        XCTAssertEqual(store.config.schemaVersion, 4)
+        XCTAssertFalse(store.profiles[0].disconnect.autoReconnect)
+        XCTAssertTrue(store.pendingReconnects.isEmpty)
+        XCTAssertTrue(store.displayAutomationAllowed)
     }
 
     func testUnavailableDisplayBackendIsReportedAndDisabledProfileIsIgnored() {

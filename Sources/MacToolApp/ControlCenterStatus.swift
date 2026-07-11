@@ -81,10 +81,10 @@ struct ControlCenterStatusSnapshot: Equatable {
         let displayDetail: String
         let displayLevel: ControlCenterStatusLevel
         if input.pendingDisplayRecoveryCount > 0 {
-            displayDetail = "(input.pendingDisplayRecoveryCount) 台等待恢复"
+            displayDetail = "\(input.pendingDisplayRecoveryCount) 台等待恢复"
             displayLevel = .critical
         } else if input.connectedDisplayCount > 0 {
-            displayDetail = "(input.connectedDisplayCount) 台已连接"
+            displayDetail = "\(input.connectedDisplayCount) 台已连接"
             displayLevel = .normal
         } else {
             displayDetail = "未连接外部显示器"
@@ -116,7 +116,7 @@ struct ControlCenterStatusSnapshot: Equatable {
             ControlCenterServiceState(
                 id: "archive",
                 title: "压缩工具",
-                detail: input.archiveFormatCount > 0 ? "(input.archiveFormatCount) 种格式可用" : "没有启用格式",
+                detail: input.archiveFormatCount > 0 ? "\(input.archiveFormatCount) 种格式可用" : "没有启用格式",
                 level: input.archiveFormatCount > 0 ? .normal : .attention,
                 route: .archive
             )
@@ -136,7 +136,7 @@ struct ControlCenterStatusSnapshot: Equatable {
             issues.append(ControlCenterIssue(
                 id: "display-recovery",
                 title: "显示器正在等待恢复",
-                detail: "有 (input.pendingDisplayRecoveryCount) 台显示器处于恢复队列，请检查恢复状态。",
+                detail: "有 \(input.pendingDisplayRecoveryCount) 台显示器处于恢复队列，请检查恢复状态。",
                 level: .critical,
                 route: .displays
             ))
@@ -161,7 +161,7 @@ struct ControlCenterStatusSnapshot: Equatable {
         }
 
         let level = issues.map(\.level).max() ?? .normal
-        let headline = issues.isEmpty ? "所有核心服务均正常" : "有 (issues.count) 项需要处理"
+        let headline = issues.isEmpty ? "所有核心服务均正常" : "有 \(issues.count) 项需要处理"
         return ControlCenterStatusSnapshot(level: level, headline: headline, services: services, issues: issues)
     }
 }
