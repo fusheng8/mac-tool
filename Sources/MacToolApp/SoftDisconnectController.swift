@@ -70,7 +70,7 @@ final class SoftDisconnectController {
         return DisplaySafetyPolicy.shouldSuppressEvent(lastMutation: lastBackendMutationAt, now: now)
     }
 
-    func validateCanDisconnect(profile: DisplayProfile, allProfiles: [DisplayProfile]) throws -> DisplaySnapshot {
+    func validateCanDisconnect(profile: DisplayProfile, allProfiles _: [DisplayProfile]) throws -> DisplaySnapshot {
         guard backend.isAvailable else {
             throw SoftDisconnectError.backendUnavailable(backend.unavailableReason ?? "当前系统不支持此能力")
         }
@@ -89,7 +89,7 @@ final class SoftDisconnectController {
         guard display.runtimeDisplayID != 0 else {
             throw SoftDisconnectError.missingRuntimeDisplayID
         }
-        guard leavesAtLeastOneDisplayAfterClosing(profile: profile, allProfiles: allProfiles) else {
+        guard leavesAtLeastOneActiveDisplayAfterClosing(profile: profile) else {
             throw SoftDisconnectError.allDisplaysWouldBeClosed
         }
         return display
@@ -214,39 +214,24 @@ final class SoftDisconnectController {
         }
     }
 
-    private func leavesAtLeastOneDisplayAfterClosing(profile: DisplayProfile, allProfiles: [DisplayProfile]) -> Bool {
-        let displays = detector.onlineDisplays().filter(\.isActive)
-        guard !displays.isEmpty else {
-            return false
-        }
-
-        var profiles = allProfiles.filter { $0.id != profile.id }
-        profiles.append(profile)
-        let idsToClose = runtimeDisplayIDsToClose(from: profiles)
-        return displays.contains { !idsToClose.contains($0.runtimeDisplayID) }
+    private func leavesAtLeastOneActiveDisplayAfterClosing(profile: DisplayProfile) -> Bool {
+        guard let display = detector.findDisplay(for: profile) else { return false }
+        return canSafelyClose(display: display)
     }
 
-    private func openBuiltInDisplayIfNeeded(profile: DisplayProfile, allProfiles: [DisplayProfile]) throws {
-        guard !leavesAtLeastOneDisplayAfterClosing(profile: profile, allProfiles: allProfiles) else {
+    private func openBuiltInDisplayIfNeeded(profile: DisplayProfile, allProfiles _: [DisplayProfile]) throws {
+        guard !leavesAtLeastOneActiveDisplayAfterClosing(profile: profile) else {
             return
         }
         try enableBuiltInDisplay()
         Thread.sleep(forTimeInterval: 0.35)
-        guard leavesAtLeastOneDisplayAfterClosing(profile: profile, allProfiles: allProfiles) else {
+        guard leavesAtLeastOneActiveDisplayAfterClosing(profile: profile) else {
             throw SoftDisconnectError.allDisplaysWouldBeClosed
         }
     }
 
-    private func displaySafetyNeedsForcedOpen(profiles: [DisplayProfile]) -> Bool {
-        let displays = detector.onlineDisplays().filter(\.isActive)
-        if displays.isEmpty {
-            return true
-        }
-        let idsToClose = runtimeDisplayIDsToClose(from: profiles)
-        guard !idsToClose.isEmpty else {
-            return false
-        }
-        return displays.allSatisfy { idsToClose.contains($0.runtimeDisplayID) }
+    private func displaySafetyNeedsForcedOpen(profiles _: [DisplayProfile]) -> Bool {
+        !detector.onlineDisplays().contains(where: \.isActive)
     }
 
     private func forceAllDisplaysOpen(store: ProfileStore, reason: String) {
@@ -347,16 +332,6 @@ final class SoftDisconnectController {
             return liveDisplay?.isActive == true
         }
         return liveDisplay == nil || liveDisplay?.isActive == false
-    }
-
-    private func runtimeDisplayIDsToClose(from profiles: [DisplayProfile]) -> Set<UInt32> {
-        var ids = Set<UInt32>()
-        for profile in profiles where desiredCloseEnabled(profile: profile) {
-            if let display = detector.findDisplay(for: profile), display.runtimeDisplayID != 0 {
-                ids.insert(display.runtimeDisplayID)
-            }
-        }
-        return ids
     }
 
     private func sameRuntimeOrStableIdentity(_ lhs: DisplaySnapshot, _ rhs: DisplaySnapshot) -> Bool {

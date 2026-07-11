@@ -125,6 +125,133 @@ final class DisplayMatchingTests: XCTestCase {
     }
 }
 
+final class DisplayDisconnectSafetyTests: XCTestCase {
+    func testManualBuiltInCloseUsesCurrentActiveDisplaysInsteadOfOtherDesiredProfiles() throws {
+        let builtIn = display(id: 1, name: "内置显示屏", builtIn: true)
+        let external = display(id: 3, name: "外接显示器", builtIn: false)
+        let detector = DisplayDetector(displayProvider: { [builtIn, external] })
+        let controller = SoftDisconnectController(detector: detector, backend: AvailableDisplayBackend())
+        let builtInProfile = profile(for: builtIn)
+        let externalProfile = profile(for: external)
+
+        let selected = try controller.validateCanDisconnect(
+            profile: builtInProfile,
+            allProfiles: [builtInProfile, externalProfile]
+        )
+
+        XCTAssertEqual(selected.runtimeDisplayID, builtIn.runtimeDisplayID)
+    }
+
+    func testManualCloseStillRejectsTheLastActiveDisplay() {
+        let builtIn = display(id: 1, name: "内置显示屏", builtIn: true)
+        let detector = DisplayDetector(displayProvider: { [builtIn] })
+        let controller = SoftDisconnectController(detector: detector, backend: AvailableDisplayBackend())
+        let builtInProfile = profile(for: builtIn)
+
+        XCTAssertThrowsError(try controller.validateCanDisconnect(
+            profile: builtInProfile,
+            allProfiles: [builtInProfile]
+        )) { error in
+            guard case SoftDisconnectError.notEnoughActiveDisplays = error else {
+                return XCTFail("Expected notEnoughActiveDisplays, got \(error)")
+            }
+        }
+    }
+
+    func testSafetyGuardDoesNotReopenClosedBuiltInDisplayWhileExternalDisplayIsActive() throws {
+        let builtIn = display(id: 1, name: "内置显示屏", builtIn: true, active: false)
+        let external = display(id: 3, name: "外接显示器", builtIn: false)
+        let detector = DisplayDetector(displayProvider: { [builtIn, external] })
+        let backend = RecordingDisplayBackend()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProfileStore(
+            configURL: root.appendingPathComponent("config.json"),
+            stateURL: root.appendingPathComponent("state.json"),
+            finderSyncConfigURL: nil
+        )
+        store.profiles = [profile(for: builtIn), profile(for: external)]
+        let controller = SoftDisconnectController(detector: detector, backend: backend)
+
+        controller.enforceDisplaySafety(store: store, reason: "test")
+
+        XCTAssertTrue(backend.mutations.isEmpty)
+    }
+
+    private func display(id: UInt32, name: String, builtIn: Bool, active: Bool = true) -> DisplaySnapshot {
+        DisplaySnapshot(
+            runtimeDisplayID: id,
+            displayName: name,
+            edidUUID: "EDID-\(id)",
+            vendorId: "0x1234",
+            modelId: "0x\(id)",
+            serialNumber: "\(id)",
+            manufacturer: "Test",
+            alphanumericSerial: "SERIAL-\(id)",
+            isBuiltIn: builtIn,
+            isActive: active,
+            ioLocation: "display-\(id)"
+        )
+    }
+
+    private func profile(for display: DisplaySnapshot) -> DisplayProfile {
+        DisplayProfile(
+            id: "profile-\(display.runtimeDisplayID)",
+            enabled: true,
+            name: display.displayName,
+            matchMode: .strict,
+            match: DisplayMatchRule(
+                displayName: display.displayName,
+                edidUUID: display.edidUUID,
+                vendorId: display.vendorId,
+                modelId: display.modelId,
+                serialNumber: display.serialNumber,
+                manufacturer: display.manufacturer,
+                alphanumericSerial: display.alphanumericSerial,
+                ioLocation: display.ioLocation,
+                matchThreshold: 80
+            ),
+            colorLock: .p3Default,
+            disconnect: DisconnectConfig(
+                enabled: true,
+                allowSoftDisconnect: true,
+                autoReconnect: false,
+                autoReconnectDelaySeconds: 30,
+                externalOnly: false,
+                confirmBeforeDisconnect: false
+            ),
+            automationEnabled: false
+        )
+    }
+}
+
+private struct AvailableDisplayBackend: DisplayBackend {
+    let isAvailable = true
+    let unavailableReason: String? = nil
+
+    func setDisplayEnabled(_ displayID: UInt32, enabled: Bool) throws {}
+}
+
+private final class RecordingDisplayBackend: DisplayBackend, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedMutations: [(UInt32, Bool)] = []
+    let isAvailable = true
+    let unavailableReason: String? = nil
+
+    var mutations: [(UInt32, Bool)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedMutations
+    }
+
+    func setDisplayEnabled(_ displayID: UInt32, enabled: Bool) throws {
+        lock.lock()
+        recordedMutations.append((displayID, enabled))
+        lock.unlock()
+    }
+}
+
 final class PortSafetyTests: XCTestCase {
     func testConnectedUDPSocketIsNotReportedAsListening() throws {
         let identity = PortProcessIdentity(pid: 100, startTimeMicroseconds: 1, executablePath: "/tmp/test")
