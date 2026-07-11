@@ -693,13 +693,16 @@ final class PortManagementView: NSView, NSTableViewDataSource, NSTableViewDelega
         }
 
         do {
-            try manager.stop(pid: usage.pid, method: method)
+            try manager.stop(usage, method: method)
             AppLogger.shared.info("已请求停止端口进程：method=\(method.displayName), port=\(usage.port), pid=\(usage.pid), app=\(usage.displayName)")
             DispatchQueue.main.asyncAfter(deadline: .now() + (method == .graceful ? 1.2 : 0.5)) { [weak self] in
                 self?.refresh()
             }
         } catch {
             showAlert(title: "停止失败", message: error.localizedDescription)
+            if error is PortManagerError {
+                refresh()
+            }
         }
     }
 

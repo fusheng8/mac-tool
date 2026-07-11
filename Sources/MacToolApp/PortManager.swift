@@ -16,6 +16,7 @@ struct PortUsage: Hashable, Identifiable {
     let user: String
     let executablePath: String
     let bundlePath: String?
+    let processIdentity: PortProcessIdentity?
 
     var listenAddress: String {
         Self.parseAddress(endpoint: endpoint)
@@ -129,6 +130,7 @@ struct ProcessResourceSnapshot: Hashable {
 enum PortManagerError: LocalizedError {
     case commandFailed(String)
     case killFailed(pid: Int32, reason: String)
+    case staleProcess(String)
 
     var errorDescription: String? {
         switch self {
@@ -136,7 +138,48 @@ enum PortManagerError: LocalizedError {
             return message
         case .killFailed(let pid, let reason):
             return "无法停止进程 \(pid)：\(reason)"
+        case .staleProcess(let message):
+            return message
         }
+    }
+}
+
+struct PortProcessIdentity: Hashable {
+    let pid: Int32
+    let startTimeMicroseconds: UInt64
+    let executablePath: String
+}
+
+protocol PortProcessInspecting {
+    func identity(pid: Int32) -> PortProcessIdentity?
+}
+
+protocol PortSignalSending {
+    func send(_ signal: Int32, to pid: Int32) throws
+}
+
+struct DarwinPortSignalSender: PortSignalSending {
+    func send(_ signal: Int32, to pid: Int32) throws {
+        if Darwin.kill(pid, signal) != 0 {
+            throw PortManagerError.killFailed(pid: pid, reason: String(cString: strerror(errno)))
+        }
+    }
+}
+
+struct DarwinPortProcessInspector: PortProcessInspecting {
+    func identity(pid: Int32) -> PortProcessIdentity? {
+        var info = proc_bsdinfo()
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: UInt8.self, capacity: MemoryLayout<proc_bsdinfo>.size) { rebound in
+                proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, rebound, Int32(MemoryLayout<proc_bsdinfo>.size))
+            }
+        }
+        guard result == MemoryLayout<proc_bsdinfo>.size else { return nil }
+        return PortProcessIdentity(
+            pid: pid,
+            startTimeMicroseconds: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+            executablePath: PortManager.executablePath(pid: pid)
+        )
     }
 }
 
@@ -264,9 +307,17 @@ final class PortCommandRunner: PortCommandRunning {
 
 final class PortManager {
     private let commandRunner: any PortCommandRunning
+    private let processInspector: any PortProcessInspecting
+    private let signalSender: any PortSignalSending
 
-    init(commandRunner: any PortCommandRunning = PortCommandRunner()) {
+    init(
+        commandRunner: any PortCommandRunning = PortCommandRunner(),
+        processInspector: any PortProcessInspecting = DarwinPortProcessInspector(),
+        signalSender: any PortSignalSending = DarwinPortSignalSender()
+    ) {
         self.commandRunner = commandRunner
+        self.processInspector = processInspector
+        self.signalSender = signalSender
     }
 
     func shellKillCommand(pid: Int32, method: PortStopMethod) -> String? {
@@ -308,16 +359,21 @@ final class PortManager {
             }
     }
 
-    func forceStop(pid: Int32) throws {
-        try stop(pid: pid, method: .kill)
-    }
-
-    func stop(pid: Int32, method: PortStopMethod) throws {
+    func stop(_ usage: PortUsage, method: PortStopMethod) throws {
+        let pid = usage.pid
         guard pid > 0 else {
             throw PortManagerError.killFailed(pid: pid, reason: "无效 PID")
         }
         guard pid != getpid() else {
             throw PortManagerError.killFailed(pid: pid, reason: "不能停止当前应用")
+        }
+        guard let expectedIdentity = usage.processIdentity,
+              let currentIdentity = processInspector.identity(pid: pid),
+              currentIdentity == expectedIdentity else {
+            throw PortManagerError.staleProcess("端口列表已过期：PID \(pid) 已退出或已被其他进程复用，请刷新后重试。")
+        }
+        guard try processStillOwnsEndpoint(usage) else {
+            throw PortManagerError.staleProcess("端口列表已过期：进程 \(pid) 已不再占用 \(usage.endpoint)，请刷新后重试。")
         }
 
         switch method {
@@ -369,10 +425,23 @@ final class PortManager {
         return output
     }
 
-    private func sendSignal(_ signal: Int32, pid: Int32) throws {
-        if Darwin.kill(pid, signal) != 0 {
-            throw PortManagerError.killFailed(pid: pid, reason: String(cString: strerror(errno)))
+    private func processStillOwnsEndpoint(_ usage: PortUsage) throws -> Bool {
+        var arguments = ["-nP", "-a", "-p", "\(usage.pid)"]
+        if usage.protocolName == "TCP" {
+            arguments += ["-iTCP", "-sTCP:LISTEN", "-F", "pcLnP"]
+        } else {
+            arguments += ["-iUDP", "-F", "pcLnP"]
         }
+        return parseLsofOutput(try runLsof(arguments: arguments)).contains {
+            $0.pid == usage.pid
+                && $0.protocolName == usage.protocolName
+                && $0.port == usage.port
+                && $0.endpoint == usage.endpoint
+        }
+    }
+
+    private func sendSignal(_ signal: Int32, pid: Int32) throws {
+        try signalSender.send(signal, to: pid)
     }
 
     private func runPS(pid: Int32) throws -> PSProcessInfo {
@@ -445,11 +514,13 @@ final class PortManager {
             case "P":
                 currentProtocol = value.uppercased()
             case "n":
-                guard let pid = currentPID, let port = PortEndpointParser.port(from: value) else {
+                guard let pid = currentPID, let parsedEndpoint = PortEndpointParser.parse(value) else {
                     continue
                 }
-                let endpoint = value
-                let protocolName = currentProtocol.isEmpty ? PortEndpointParser.inferredProtocol(from: endpoint) : currentProtocol
+                let protocolName = currentProtocol.isEmpty ? PortEndpointParser.inferredProtocol(from: value) : currentProtocol
+                guard protocolName != "UDP" || !parsedEndpoint.hasRemoteEndpoint else { continue }
+                let endpoint = parsedEndpoint.localDescription
+                let port = parsedEndpoint.localPort
                 let id = "\(pid)-\(protocolName)-\(endpoint)"
                 guard !seenIDs.contains(id) else {
                     continue
@@ -465,7 +536,8 @@ final class PortManager {
                     command: currentCommand,
                     user: currentUser,
                     executablePath: Self.executablePath(pid: pid),
-                    bundlePath: bundlePath
+                    bundlePath: bundlePath,
+                    processIdentity: processInspector.identity(pid: pid)
                 ))
             default:
                 continue
@@ -475,7 +547,7 @@ final class PortManager {
         return results
     }
 
-    private static func executablePath(pid: Int32) -> String {
+    static func executablePath(pid: Int32) -> String {
         var buffer = [CChar](repeating: 0, count: 4096)
         let result = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard result > 0 else {

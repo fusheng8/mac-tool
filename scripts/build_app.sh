@@ -23,8 +23,13 @@ SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-eyi+nHTzTn99VVto7AhjOAjXE908zK36
 
 if [[ "$ALLOW_ADHOC" == "1" ]]; then
     CODESIGN_IDENTITY="-"
-elif [[ -z "${CODESIGN_IDENTITY:-}" || "$CODESIGN_IDENTITY" != "Apple Development:"* ]]; then
-    echo "正式构建必须设置固定的 Apple Development 签名身份。开发构建可显式使用 ALLOW_ADHOC=1。" >&2
+    CODESIGN_TIMESTAMP_ARGS=(--timestamp=none)
+elif [[ -n "${CODESIGN_IDENTITY:-}" && "$CODESIGN_IDENTITY" == "Apple Development:"* ]]; then
+    CODESIGN_TIMESTAMP_ARGS=(--timestamp=none)
+elif [[ -n "${CODESIGN_IDENTITY:-}" && "$CODESIGN_IDENTITY" == "Developer ID Application:"* ]]; then
+    CODESIGN_TIMESTAMP_ARGS=(--timestamp)
+else
+    echo "正式构建必须设置 Apple Development 或 Developer ID Application 签名身份。开发构建可显式使用 ALLOW_ADHOC=1。" >&2
     exit 1
 fi
 
@@ -248,10 +253,10 @@ PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD_VERSION" "$EXTENSION_CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $SPARKLE_PUBLIC_ED_KEY" "$CONTENTS_DIR/Info.plist"
 
-codesign --force --deep --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
-codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$HELPERS_DIR/7zz"
-codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT_DIR/scripts/finder_sync_extension.entitlements" "$EXTENSION_DIR"
-codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+codesign --force --deep --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$CODESIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
+codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$CODESIGN_IDENTITY" "$HELPERS_DIR/7zz"
+codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT_DIR/scripts/finder_sync_extension.entitlements" "$EXTENSION_DIR"
+codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$CODESIGN_IDENTITY" "$APP_DIR"
 
 if [[ "$(lipo -archs "$MACOS_DIR/mac-tool")" != "arm64" || "$(lipo -archs "$EXTENSION_MACOS_DIR/mac-tool-finder-sync")" != "arm64" || "$(lipo -archs "$HELPERS_DIR/7zz")" != "arm64" ]]; then
     echo "构建失败：主程序、Finder 扩展或内置 7zz 不是纯 arm64。" >&2

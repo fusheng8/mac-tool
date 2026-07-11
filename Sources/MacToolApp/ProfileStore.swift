@@ -19,6 +19,7 @@ final class ProfileStore: @unchecked Sendable {
     let isExistingInstallation: Bool
     private(set) var recoveryNotice: String?
     private(set) var lastPersistenceError: Error?
+    private(set) var lastFinderSyncError: Error?
 
     init(
         configURL: URL = AppPaths.configURL,
@@ -37,11 +38,15 @@ final class ProfileStore: @unchecked Sendable {
         do {
             try Self.ensureParentDirectory(for: configURL)
             try Self.ensureParentDirectory(for: stateURL)
-            if let finderSyncConfigURL {
-                try Self.ensureParentDirectory(for: finderSyncConfigURL)
-            }
         } catch {
             lastPersistenceError = error
+        }
+        if let finderSyncConfigURL {
+            do {
+                try Self.ensureParentDirectory(for: finderSyncConfigURL)
+            } catch {
+                lastFinderSyncError = error
+            }
         }
 
         let loadedConfig: AppConfig
@@ -55,16 +60,11 @@ final class ProfileStore: @unchecked Sendable {
             lastPersistenceError = error
         }
 
-        var normalizedConfig = loadedConfig
-        normalizedConfig.contextMenu = normalizedConfig.contextMenu.normalized()
-        if normalizedConfig.archive.enabledFormats.isEmpty {
-            normalizedConfig.archive = .defaultValue
-        }
+        let normalizedConfig = loadedConfig.normalized()
         let requiresConfigMigration = ConfigurationRecoveryPolicy.requiresMigration(
-            schemaVersion: normalizedConfig.schemaVersion,
+            schemaVersion: loadedConfig.schemaVersion,
             currentVersion: AppConfig.currentSchemaVersion
         )
-        normalizedConfig.schemaVersion = AppConfig.currentSchemaVersion
         storedConfig = normalizedConfig
 
         do {
@@ -94,6 +94,7 @@ final class ProfileStore: @unchecked Sendable {
         } catch {
             lastPersistenceError = error
         }
+        synchronizeFinderConfigBestEffort()
     }
 
     var config: AppConfig { withLock { storedConfig } }
@@ -139,14 +140,7 @@ final class ProfileStore: @unchecked Sendable {
         try withLock {
             var candidate = storedConfig
             try mutation(&candidate)
-            candidate.schemaVersion = AppConfig.currentSchemaVersion
-            let data = try encoder.encode(candidate)
-            try Self.secureAtomicWrite(data, to: configURL)
-            if let finderSyncConfigURL {
-                try Self.secureAtomicWrite(data, to: finderSyncConfigURL)
-            }
-            storedConfig = candidate
-            lastPersistenceError = nil
+            try commitConfig(candidate)
         }
     }
 
@@ -242,7 +236,10 @@ final class ProfileStore: @unchecked Sendable {
     func reload() {
         do {
             if let config = try Self.load(AppConfig.self, from: configURL, decoder: decoder) {
-                withLock { storedConfig = config }
+                withLock {
+                    storedConfig = config.normalized()
+                    synchronizeFinderConfigBestEffortLocked()
+                }
             }
             if let state = try Self.load(AppState.self, from: stateURL, decoder: decoder) {
                 withLock { storedState = state }
@@ -257,16 +254,14 @@ final class ProfileStore: @unchecked Sendable {
 
     func importConfig(from url: URL) throws {
         let data = try Data(contentsOf: url)
-        var importedConfig = try decoder.decode(AppConfig.self, from: data)
+        let importedConfig = try decoder.decode(AppConfig.self, from: data)
         guard ConfigurationRecoveryPolicy.canImport(
             schemaVersion: importedConfig.schemaVersion,
             currentVersion: AppConfig.currentSchemaVersion
         ) else {
             throw ProfileStoreError.unsupportedSchema(importedConfig.schemaVersion)
         }
-        importedConfig.contextMenu = importedConfig.contextMenu.normalized()
-        if importedConfig.archive.enabledFormats.isEmpty { importedConfig.archive = .defaultValue }
-        try updateConfig { $0 = importedConfig }
+        try updateConfig { $0 = importedConfig.normalized() }
     }
 
     func backupConfigToICloud() throws -> URL {
@@ -309,7 +304,13 @@ final class ProfileStore: @unchecked Sendable {
         guard envelope.version <= AppConfig.currentSchemaVersion else {
             throw ProfileStoreError.unsupportedSchema(envelope.version)
         }
-        try updateConfig { $0 = envelope.config }
+        guard ConfigurationRecoveryPolicy.canImport(
+            schemaVersion: envelope.config.schemaVersion,
+            currentVersion: AppConfig.currentSchemaVersion
+        ) else {
+            throw ProfileStoreError.unsupportedSchema(envelope.config.schemaVersion)
+        }
+        try updateConfig { $0 = envelope.config.normalized() }
     }
 
     func iCloudBackupDifferenceSummary() throws -> String {
@@ -330,10 +331,7 @@ final class ProfileStore: @unchecked Sendable {
 
     func saveConfig() throws {
         try withLock {
-            storedConfig.schemaVersion = AppConfig.currentSchemaVersion
-            let data = try encoder.encode(storedConfig)
-            try Self.secureAtomicWrite(data, to: configURL)
-            if let finderSyncConfigURL { try Self.secureAtomicWrite(data, to: finderSyncConfigURL) }
+            try commitConfig(storedConfig)
         }
     }
 
@@ -352,6 +350,44 @@ final class ProfileStore: @unchecked Sendable {
     private func record(_ error: Error) {
         withLock { lastPersistenceError = error }
         AppLogger.shared.error("配置保存失败：\(error.localizedDescription)")
+    }
+
+    private func commitConfig(_ candidate: AppConfig) throws {
+        let normalized = candidate.normalized()
+        let data = try encoder.encode(normalized)
+        do {
+            try Self.secureAtomicWrite(data, to: configURL)
+        } catch {
+            lastPersistenceError = error
+            throw error
+        }
+        storedConfig = normalized
+        lastPersistenceError = nil
+        synchronizeFinderConfigBestEffortLocked(data: data)
+    }
+
+    private func synchronizeFinderConfigBestEffort() {
+        withLock { synchronizeFinderConfigBestEffortLocked() }
+    }
+
+    private func synchronizeFinderConfigBestEffortLocked(data: Data? = nil) {
+        guard let finderSyncConfigURL else {
+            lastFinderSyncError = nil
+            return
+        }
+        do {
+            let payload: Data
+            if let data {
+                payload = data
+            } else {
+                payload = try encoder.encode(storedConfig.normalized())
+            }
+            try Self.secureAtomicWrite(payload, to: finderSyncConfigURL)
+            lastFinderSyncError = nil
+        } catch {
+            lastFinderSyncError = error
+            AppLogger.shared.error("Finder 配置副本同步失败，将在下次保存或启动时重试：\(error.localizedDescription)")
+        }
     }
 
     private func withLock<T>(_ body: () throws -> T) rethrows -> T {

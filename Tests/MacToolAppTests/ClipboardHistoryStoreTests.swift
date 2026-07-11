@@ -31,6 +31,44 @@ final class ClipboardHistoryStoreTests: XCTestCase {
         XCTAssertTrue(try containsFile(in: fixture.blobDirectory))
     }
 
+    func testMultiplePasteboardItemsRoundTripAndAffectDuplicateHash() throws {
+        let fixture = try makeStoreFixture()
+        let firstType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("first".utf8), itemIndex: 0)
+        let secondType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("second".utf8), itemIndex: 1)
+        let firstItem = makeItem(preview: "two items", plainText: "first\nsecond", storedTypes: [firstType, secondType])
+        _ = try fixture.store.insert(firstItem, maxHistoryCount: 20, retentionDays: 30)
+
+        XCTAssertEqual(try fixture.store.loadStoredTypes(itemID: firstItem.id), [firstType, secondType])
+
+        let regrouped = makeItem(
+            preview: "one item",
+            plainText: "first\nsecond",
+            storedTypes: [firstType, ClipboardStoredType(type: secondType.type, data: secondType.data, itemIndex: 0)]
+        )
+        let loaded = try fixture.store.insert(regrouped, maxHistoryCount: 20, retentionDays: 30)
+        XCTAssertEqual(loaded.count, 2)
+    }
+
+    func testLegacyStoredTypeDefaultsToFirstPasteboardItem() throws {
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "type": NSPasteboard.PasteboardType.string.rawValue,
+            "data": Data("legacy".utf8).base64EncodedString()
+        ])
+        let decoded = try JSONDecoder().decode(ClipboardStoredType.self, from: payload)
+        XCTAssertEqual(decoded.itemIndex, 0)
+    }
+
+    func testNegativeSearchLimitReturnsEmptyInsteadOfCrashing() throws {
+        let fixture = try makeStoreFixture()
+        let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("safe".utf8))
+        _ = try fixture.store.insert(
+            makeItem(preview: "safe", plainText: "safe", storedTypes: [storedType]),
+            maxHistoryCount: 20,
+            retentionDays: 30
+        )
+        XCTAssertTrue(try fixture.store.search("", limit: -1).isEmpty)
+    }
+
     func testDuplicateInsertKeepsFavoriteState() throws {
         let fixture = try makeStoreFixture()
         let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("same".utf8))

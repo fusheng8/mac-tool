@@ -149,6 +149,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let displayAutoReconnectSwitch = MacSwitchControl()
     private let displayReconnectDelayControl = MacNumberControl()
     private let displayConfirmCloseSwitch = MacSwitchControl()
+    private let displayMatchModeControl = MacSelectControl()
+    private let displayMatchThresholdControl = MacNumberControl()
     private var archiveFormatSwitches: [ArchiveFormat: MacSwitchControl] = [:]
     private let maxHistoryCountControl = MacNumberControl()
     private let portManagementView = PortManagementView()
@@ -235,6 +237,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         configureClipboardPollIntervalControl()
         configureClipboardStructuredPreviewLimitControl()
         configureDisplayReconnectDelayControl()
+        configureDisplayMatchControls()
         configureArchiveCompressionLevelControl()
         buildUI()
         refreshDisplays()
@@ -348,6 +351,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayReconnectDelayControl.maxValue = 3600
         displayReconnectDelayControl.increment = 5
         displayReconnectDelayControl.onChange = { [weak self] _ in
+            _ = self?.saveSelectedProfile()
+        }
+    }
+
+    private func configureDisplayMatchControls() {
+        displayMatchModeControl.items = ["严格匹配", "加权匹配"]
+        displayMatchModeControl.target = self
+        displayMatchModeControl.action = #selector(displayMatchModeChanged)
+        displayMatchThresholdControl.minValue = 1
+        displayMatchThresholdControl.maxValue = 100
+        displayMatchThresholdControl.increment = 5
+        displayMatchThresholdControl.onChange = { [weak self] _ in
             _ = self?.saveSelectedProfile()
         }
     }
@@ -934,6 +949,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func settingsSection(display: DisplaySnapshot) -> NSView {
         var rows: [NSView] = [
+            controlRow(
+                title: "识别方式",
+                detail: "严格匹配使用最强稳定标识；加权匹配用于扩展坞或系统更新后标识发生变化的情况。",
+                control: displayMatchModeControl
+            ),
+            controlRow(
+                title: "加权阈值",
+                detail: "仅加权匹配时生效；分数不足或存在并列候选时不会自动操作显示器。",
+                control: displayMatchThresholdControl
+            ),
             switchRow(title: "关闭此显示器", detail: "开关显示当前实际关闭状态；安全兜底时会临时保持打开。", control: closeDisplaySwitch),
             switchRow(title: "关闭前二次确认", detail: "避免误触导致屏幕短暂黑屏。", control: displayConfirmCloseSwitch),
             switchRow(title: "自动恢复", detail: "关闭显示器后按设定时间自动重新打开。", control: displayAutoReconnectSwitch),
@@ -2295,6 +2320,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func loadControls(profile: DisplayProfile, display: DisplaySnapshot) {
+        displayMatchModeControl.selectedIndex = profile.matchMode == .strict ? 0 : 1
+        displayMatchThresholdControl.value = DisplayMatchRule.normalizedThreshold(profile.match.matchThreshold)
+        displayMatchThresholdControl.isEnabled = profile.matchMode == .weighted
         closeDisplaySwitch.state = display.isActive ? .off : .on
         closeDisplaySwitch.isEnabled = display.runtimeDisplayID != 0 && disconnect.backendAvailability.available
         if let reason = disconnect.backendAvailability.reason, !disconnect.backendAvailability.available {
@@ -2344,8 +2372,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             id: existing.id,
             enabled: closeEnabled,
             name: suggestedProfileName(for: display),
-            matchMode: .strict,
-            match: matchRule(for: display),
+            matchMode: displayMatchModeControl.selectedIndex == 1 ? .weighted : .strict,
+            match: matchRule(for: display, threshold: displayMatchThresholdControl.value),
             colorLock: colorLock,
             disconnect: DisconnectConfig(
                 enabled: closeEnabled,
@@ -2375,6 +2403,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         isReloadingUI = true
         closeDisplaySwitch.state = isOn ? .on : .off
         isReloadingUI = false
+    }
+
+    @objc private func displayMatchModeChanged() {
+        guard !isReloadingUI else { return }
+        displayMatchThresholdControl.isEnabled = displayMatchModeControl.selectedIndex == 1
+        _ = saveSelectedProfile()
     }
 
     private func saveClipboardConfig(hotKey: HotKeyConfig? = nil) {
@@ -2662,7 +2696,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         )
     }
 
-    private func matchRule(for display: DisplaySnapshot) -> DisplayMatchRule {
+    private func matchRule(for display: DisplaySnapshot, threshold: Int = 80) -> DisplayMatchRule {
         DisplayMatchRule(
             displayName: display.displayName,
             edidUUID: display.edidUUID,
@@ -2672,7 +2706,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             manufacturer: display.manufacturer,
             alphanumericSerial: display.alphanumericSerial,
             ioLocation: display.ioLocation,
-            matchThreshold: 80
+            matchThreshold: DisplayMatchRule.normalizedThreshold(threshold)
         )
     }
 

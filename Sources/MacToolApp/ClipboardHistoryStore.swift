@@ -187,6 +187,7 @@ final class ClipboardHistoryStore: @unchecked Sendable {
     }
 
     func search(_ query: String, filter: ClipboardHistorySearchFilter = .empty, limit: Int) throws -> [ClipboardHistoryItem] {
+        let safeLimit = max(0, limit)
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         return try fetchItems().filter { item in
@@ -205,7 +206,7 @@ final class ClipboardHistoryStore: @unchecked Sendable {
                 .joined(separator: "\n")
                 .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             return searchable.contains(normalizedQuery)
-        }.prefix(limit).map { $0 }
+        }.prefix(safeLimit).map { $0 }
     }
 
     func loadStoredTypes(itemID: UUID) throws -> [ClipboardStoredType] {
@@ -334,13 +335,14 @@ final class ClipboardHistoryStore: @unchecked Sendable {
     }
 
     private func trim(maxHistoryCount: Int) throws {
+        let safeMaximum = max(0, maxHistoryCount)
         try performWrite { db, journal in
             let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clipboard_items") ?? 0
-            guard count > maxHistoryCount else { return }
+            guard count > safeMaximum else { return }
             let ids = try String.fetchAll(
                 db,
                 sql: "SELECT id FROM clipboard_items WHERE isFavorite = 0 ORDER BY sortKey ASC LIMIT ?",
-                arguments: [count - maxHistoryCount]
+                arguments: [count - safeMaximum]
             )
             try deleteItems(db, ids: ids, journal: journal)
         }
@@ -583,7 +585,13 @@ final class ClipboardHistoryStore: @unchecked Sendable {
 
     private func contentHash(for types: [ClipboardStoredType], crypto: any ClipboardCryptoProviding) -> String {
         var data = Data()
-        for type in types.sorted(by: { $0.type < $1.type }) {
+        let includesMultipleItems = types.contains { $0.itemIndex != 0 }
+        for type in types.sorted(by: {
+            $0.itemIndex == $1.itemIndex ? $0.type < $1.type : $0.itemIndex < $1.itemIndex
+        }) {
+            if includesMultipleItems {
+                data.append(Data("\(type.itemIndex)".utf8)); data.append(0)
+            }
             data.append(Data(type.type.utf8)); data.append(0); data.append(type.data); data.append(0)
         }
         return crypto.authenticationHash(data)

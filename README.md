@@ -2,7 +2,7 @@
 
 Mac助手是一款面向 macOS 的轻量菜单栏效率工具。它把外接显示器控制、剪贴板历史、Finder 右键增强、压缩/解压和端口占用查看放在一个本机 App 里，适合经常连接外接显示器、处理压缩包、排查本地服务端口的 Mac 用户。
 
-当前稳定版本为 `0.2.1`，仅支持 Apple Silicon（arm64）和 macOS 13 Ventura 或更高版本。隐私、故障恢复和兼容性说明分别见 [PRIVACY.md](PRIVACY.md)、[docs/recovery.md](docs/recovery.md) 与 [docs/compatibility.md](docs/compatibility.md)。
+当前稳定版本为 `0.2.2`，仅支持 Apple Silicon（arm64）和 macOS 13 Ventura 或更高版本。隐私、故障恢复和兼容性说明分别见 [PRIVACY.md](PRIVACY.md)、[docs/recovery.md](docs/recovery.md) 与 [docs/compatibility.md](docs/compatibility.md)。
 
 底层项目名和主可执行文件名为 `mac-tool`，App 展示名为 `Mac助手`。
 
@@ -205,7 +205,7 @@ Finder 右键菜单依赖 Finder Sync 扩展。首次安装或更换 Bundle ID �
 ## 系统要求
 
 - macOS 13 Ventura 或更高版本。
-- Apple Silicon（arm64）；0.2.1 不提供 Intel 构建。
+- Apple Silicon（arm64）；0.2.2 不提供 Intel 构建。
 - Swift 6 toolchain / Xcode 16 或更高版本。
 - 非沙盒运行环境。项目使用显示相关私有符号和 Finder Sync 扩展，不适合上架 Mac App Store。
 - DDC/CI 功能依赖显示器、连接线和 macOS 当前暴露的底层能力；部分显示器可能不支持亮度、对比度或音量 VCP 码。
@@ -215,7 +215,7 @@ Finder 右键菜单依赖 Finder Sync 扩展。首次安装或更换 Bundle ID �
 
 ## 快速开始
 
-正式构建要求固定的 Apple Development 签名身份：
+正式构建要求固定的 Apple Development 或 Developer ID Application 签名身份：
 
 ```bash
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
@@ -242,10 +242,21 @@ scripts/install_app.sh /Applications
 scripts/build_dmg.sh
 ```
 
+需要生成可提交 Apple 公证的本地 DMG 时，先把公证凭据保存到钥匙串，再启用公证开关：
+
+```bash
+xcrun notarytool store-credentials mac-tool-notary
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+  NOTARIZE=1 NOTARYTOOL_PROFILE=mac-tool-notary \
+  scripts/build_dmg.sh
+```
+
+该流程会等待 `notarytool` 返回结果，并执行 `stapler` 与 Gatekeeper 验证。`NOTARIZE=1` 不接受 Apple Development 或 ad-hoc 签名。
+
 生成位置类似：
 
 ```text
-.build/Mac助手-0.2.1.dmg
+.build/Mac助手-0.2.2.dmg
 ```
 
 版本号只从仓库根目录的 `VERSION` 读取，构建号取 Git 提交计数。DMG 始终包含指向 `/Applications` 的安装入口。发布工作流只响应与 `VERSION` 一致的版本标签或手动触发；PR 与 `main` 使用只读 CI 验证。
@@ -258,7 +269,7 @@ Mac助手使用 Sparkle 2 检查并安装后续更新。更新包仍通过 GitHu
 https://fusheng8.github.io/mac-tool/appcast.xml
 ```
 
-0.2.1 个人稳定版使用固定 Apple Development 身份和 Hardened Runtime，暂不包含 Developer ID 公证。安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
+0.2.2 现有自动发布仍使用固定 Apple Development 身份和 Hardened Runtime；本地构建脚本已支持 Developer ID Application 与 Apple 公证，但不会自动改变 GitHub Release 门槛。安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
 
 ```text
 SPARKLE_PRIVATE_KEY
@@ -266,11 +277,12 @@ SPARKLE_PRIVATE_KEY
 
 私钥本地文件默认放在已忽略的 `private/sparkle_private_key`，不要提交到仓库。GitHub Pages 需要在仓库设置中启用，并选择 GitHub Actions 作为 Pages 来源。
 
-正式构建不会回退到 ad-hoc 签名：
+正式构建不会回退到 ad-hoc 签名；本地可选择 Apple Development 或 Developer ID Application：
 
 ```bash
 security find-identity -v -p codesigning
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" scripts/build_app.sh
 ```
 
 推荐让 Apple 代码签名私钥始终留在本机钥匙串：先在本机生成正式签名 DMG，再把它上传到对应版本的草稿 Release：
@@ -278,8 +290,8 @@ CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
 ```bash
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" \
   DMG_NAME=MacTool.dmg scripts/build_dmg.sh
-gh release create 0.2.1 .build/MacTool.dmg \
-  --title 0.2.1 --generate-notes --verify-tag --draft
+gh release create 0.2.2 .build/MacTool.dmg \
+  --title 0.2.2 --generate-notes --verify-tag --draft
 ```
 
 版本标签触发后，GitHub Actions 会下载该预签名 DMG，重新验证磁盘镜像、arm64 架构、固定 Team Identifier、Hardened Runtime、Bundle/扩展签名、版本和路径，再使用仓库中已有的 `SPARKLE_PRIVATE_KEY` 生成 appcast。验证完成前 Release 保持草稿状态。

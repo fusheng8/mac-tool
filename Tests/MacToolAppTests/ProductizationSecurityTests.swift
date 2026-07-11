@@ -153,6 +153,14 @@ final class ProductSafetyTests: XCTestCase {
         XCTAssertTrue(tracker.consumeChange(21))
     }
 
+    func testClipboardSourceAttributionKeepsPreviousApplicationAcrossActivation() {
+        var tracker = ClipboardSourceAttributionTracker()
+        tracker.reset(to: 100)
+        XCTAssertEqual(tracker.activate(200), 100)
+        XCTAssertEqual(tracker.activeProcessIdentifier, 200)
+        XCTAssertEqual(tracker.activate(nil), 200)
+    }
+
     private var temporaryDirectories: [URL] = []
 
     override func tearDownWithError() throws {
@@ -169,6 +177,29 @@ final class ProductSafetyTests: XCTestCase {
         XCTAssertFalse(DisconnectConfig.defaultValue.allowSoftDisconnect)
         XCTAssertTrue(DisconnectConfig.defaultValue.externalOnly)
         XCTAssertTrue(DisconnectConfig.defaultValue.confirmBeforeDisconnect)
+    }
+
+    func testImportedNumericConfigurationIsNormalized() throws {
+        let config = ClipboardConfig(
+            enabled: true,
+            hotKey: .defaultClipboard,
+            maxHistoryCount: -1,
+            recordingPaused: false,
+            excludeKnownPasswordManagers: true,
+            excludedBundleIdentifiers: [" Com.Example.App ", ""],
+            retentionDays: 999,
+            pollIntervalMilliseconds: 1,
+            structuredPreviewLimitKB: 99_999
+        )
+        XCTAssertEqual(config.maxHistoryCount, 10)
+        XCTAssertEqual(config.retentionDays, 365)
+        XCTAssertEqual(config.pollIntervalMilliseconds, 200)
+        XCTAssertEqual(config.structuredPreviewLimitKB, 4096)
+        XCTAssertEqual(config.normalized().excludedBundleIdentifiers, ["com.example.app"])
+
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ClipboardConfig.self, from: encoded)
+        XCTAssertEqual(decoded.maxHistoryCount, 10)
     }
 
     func testSensitivePasteboardMarkersAreExcluded() {
@@ -204,6 +235,11 @@ final class ProductSafetyTests: XCTestCase {
 
         XCTAssertEqual(PortEndpointParser.port(from: "127.0.0.1:8080 (LISTEN)"), 8080)
         XCTAssertEqual(PortEndpointParser.port(from: "[::1]:443"), 443)
+        let connected = try XCTUnwrap(PortEndpointParser.parse("127.0.0.1:50000->1.1.1.1:443"))
+        XCTAssertEqual(connected.localPort, 50000)
+        XCTAssertEqual(connected.remotePort, 443)
+        XCTAssertTrue(connected.hasRemoteEndpoint)
+        XCTAssertEqual(PortEndpointParser.parse("[::1]:5353")?.localDescription, "[::1]:5353")
         XCTAssertNil(PortEndpointParser.port(from: "localhost"))
         XCTAssertEqual(PortEndpointParser.inferredProtocol(from: "*:5353 UDP"), "UDP")
         let cipher = ClipboardCipher(keyData: Data(repeating: 0x5A, count: 32))
@@ -257,6 +293,27 @@ final class ProductSafetyTests: XCTestCase {
         group.wait()
         XCTAssertTrue(capturedErrors.isEmpty)
         XCTAssertEqual(Set(store.profiles.map(\.id)).count, 25)
+    }
+
+    func testFinderReplicaFailureKeepsCanonicalConfigAndMemoryConsistent() throws {
+        let root = try temporaryDirectory()
+        let blockedParent = root.appendingPathComponent("blocked")
+        try Data("not-a-directory".utf8).write(to: blockedParent)
+        let configURL = root.appendingPathComponent("config.json")
+        let store = ProfileStore(
+            configURL: configURL,
+            stateURL: root.appendingPathComponent("state.json"),
+            finderSyncConfigURL: blockedParent.appendingPathComponent("config.json")
+        )
+
+        try store.updateConfig { $0.clipboard.enabled = false }
+        XCTAssertFalse(store.clipboard.enabled)
+        XCTAssertNotNil(store.lastFinderSyncError)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode(AppConfig.self, from: Data(contentsOf: configURL))
+        XCTAssertFalse(persisted.clipboard.enabled)
     }
 
     func testBackgroundTasksRequireCompletedPrivacyNotice() throws {
