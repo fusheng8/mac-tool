@@ -10,11 +10,28 @@ DMG_DIR="$ROOT_DIR/.build"
 APP_VERSION="${APP_VERSION:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")}"
 APP_BUILD_VERSION="${APP_BUILD_VERSION:-$(git -C "$ROOT_DIR" rev-list --count HEAD)}"
 DMG_NAME="${DMG_NAME:-}"
+NOTARIZE="${NOTARIZE:-0}"
 if [[ "${ALLOW_ADHOC:-0}" == "1" ]]; then
     CODESIGN_IDENTITY="-"
-elif [[ -z "${CODESIGN_IDENTITY:-}" || "$CODESIGN_IDENTITY" != "Apple Development:"* ]]; then
-    echo "DMG 构建需要固定 Apple Development 身份；仅开发验证可显式设置 ALLOW_ADHOC=1。" >&2
+    CODESIGN_TIMESTAMP_ARGS=(--timestamp=none)
+elif [[ -n "${CODESIGN_IDENTITY:-}" && "$CODESIGN_IDENTITY" == "Apple Development:"* ]]; then
+    CODESIGN_TIMESTAMP_ARGS=(--timestamp=none)
+elif [[ -n "${CODESIGN_IDENTITY:-}" && "$CODESIGN_IDENTITY" == "Developer ID Application:"* ]]; then
+    CODESIGN_TIMESTAMP_ARGS=(--timestamp)
+else
+    echo "DMG 构建需要 Apple Development 或 Developer ID Application 身份；仅开发验证可显式设置 ALLOW_ADHOC=1。" >&2
     exit 1
+fi
+
+if [[ "$NOTARIZE" == "1" ]]; then
+    if [[ "$CODESIGN_IDENTITY" != "Developer ID Application:"* ]]; then
+        echo "NOTARIZE=1 要求 Developer ID Application 签名身份。" >&2
+        exit 1
+    fi
+    if [[ -z "${NOTARYTOOL_PROFILE:-}" ]]; then
+        echo "NOTARIZE=1 要求设置 NOTARYTOOL_PROFILE。" >&2
+        exit 1
+    fi
 fi
 
 cd "$ROOT_DIR"
@@ -41,9 +58,13 @@ hdiutil create \
     -format UDZO \
     "$DMG_PATH"
 
-codesign --force --options runtime --timestamp=none --sign "$CODESIGN_IDENTITY" "$DMG_PATH"
+codesign --force --options runtime "${CODESIGN_TIMESTAMP_ARGS[@]}" --sign "$CODESIGN_IDENTITY" "$DMG_PATH"
 codesign --verify --deep --strict "$APP_DIR"
 codesign --verify "$DMG_PATH"
+
+if [[ "$NOTARIZE" == "1" ]]; then
+    DMG_PATH="$DMG_PATH" NOTARYTOOL_PROFILE="$NOTARYTOOL_PROFILE" "$ROOT_DIR/scripts/notarize_dmg.sh"
+fi
 
 echo "已创建 DMG：$DMG_PATH"
 echo "签名身份：$CODESIGN_IDENTITY"

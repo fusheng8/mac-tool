@@ -173,6 +173,7 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
     }
 
     @objc private func formatChanged() {
+        hintLabel.textColor = .secondaryLabelColor
         passwordField.isEnabled = selectedFormat.supportsCompressionPassword
         if !passwordField.isEnabled {
             passwordField.text = ""
@@ -187,13 +188,22 @@ final class ArchiveCompressionOptionsWindowController: NSWindowController {
     }
 
     @objc private func compressionLevelChanged() {
+        hintLabel.textColor = .secondaryLabelColor
         updateCompressionLevelLabel()
         updateHint()
     }
 
     @objc private func confirm() {
         let name = nameField.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else {
+        guard let parent = urls.first?.deletingLastPathComponent() else {
+            NSSound.beep()
+            return
+        }
+        do {
+            _ = try ArchiveActionExecutor.validatedArchiveFileName(name, format: selectedFormat, parent: parent)
+        } catch {
+            hintLabel.textColor = .systemRed
+            hintLabel.stringValue = error.localizedDescription
             NSSound.beep()
             return
         }

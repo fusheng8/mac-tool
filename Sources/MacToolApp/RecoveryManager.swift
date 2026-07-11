@@ -1,13 +1,59 @@
 import Foundation
 
+final class RecoveryCountdownRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timers: [String: DispatchSourceTimer] = [:]
+    private var deadlines: [String: Date] = [:]
+    private var tokens: [String: UUID] = [:]
+
+    func install(profileID: String, deadline: Date, timer: DispatchSourceTimer, token: UUID) -> DispatchSourceTimer? {
+        lock.lock()
+        defer { lock.unlock() }
+        timer.resume()
+        let previous = timers.updateValue(timer, forKey: profileID)
+        deadlines[profileID] = deadline
+        tokens[profileID] = token
+        return previous
+    }
+
+    func isCurrent(profileID: String, token: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return tokens[profileID] == token
+    }
+
+    func remove(profileID: String) -> DispatchSourceTimer? {
+        lock.lock()
+        defer { lock.unlock() }
+        deadlines.removeValue(forKey: profileID)
+        tokens.removeValue(forKey: profileID)
+        return timers.removeValue(forKey: profileID)
+    }
+
+    func deadline(profileID: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return deadlines[profileID]
+    }
+
+    func removeAll() -> [DispatchSourceTimer] {
+        lock.lock()
+        defer { lock.unlock() }
+        let active = Array(timers.values)
+        timers.removeAll()
+        deadlines.removeAll()
+        tokens.removeAll()
+        return active
+    }
+}
+
 final class RecoveryManager {
     private let store: ProfileStore
     private let disconnect: SoftDisconnectController
     private let automation: AutomationController
     private let statuses: RuntimeStatusStore
     private let logger: AppLogger
-    private var timers: [String: DispatchSourceTimer] = [:]
-    private var deadlines: [String: Date] = [:]
+    private let countdowns = RecoveryCountdownRegistry()
     private let queue = DispatchQueue(label: "mac-tool.Recovery")
 
     var onCountdownTick: (() -> Void)?
@@ -24,6 +70,10 @@ final class RecoveryManager {
         self.automation = automation
         self.statuses = statuses
         self.logger = logger
+    }
+
+    deinit {
+        countdowns.removeAll().forEach { $0.cancel() }
     }
 
     func recoverPendingOnLaunch() {
@@ -60,14 +110,16 @@ final class RecoveryManager {
         )
         store.addPendingReconnect(pending)
         let delay = max(1, profile.disconnect.autoReconnectDelaySeconds)
-        deadlines[profile.id] = Date().addingTimeInterval(TimeInterval(delay))
+        let deadline = Date().addingTimeInterval(TimeInterval(delay))
         statuses.set(.reconnectCountdown, profileId: profile.id, message: "\(delay) 秒")
         logger.info("\(profile.name) 已开始重新连接倒计时")
 
         let timer = DispatchSource.makeTimerSource(queue: queue)
+        let timerToken = UUID()
         timer.schedule(deadline: .now() + .seconds(1), repeating: .seconds(1))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
+            guard self.countdowns.isCurrent(profileID: profile.id, token: timerToken) else { return }
             let remaining = self.remainingSeconds(profileId: profile.id) ?? 0
             if remaining <= 0 {
                 self.attemptReconnect(profile: profile, maxAttempts: 6)
@@ -76,32 +128,26 @@ final class RecoveryManager {
                 DispatchQueue.main.async { self.onCountdownTick?() }
             }
         }
-        timers[profile.id]?.cancel()
-        timers[profile.id] = timer
-        timer.resume()
+        countdowns.install(profileID: profile.id, deadline: deadline, timer: timer, token: timerToken)?.cancel()
         onCountdownTick?()
     }
 
     func cancelCountdown(profileId: String) {
-        timers[profileId]?.cancel()
-        timers.removeValue(forKey: profileId)
-        deadlines.removeValue(forKey: profileId)
+        countdowns.remove(profileID: profileId)?.cancel()
         store.clearPendingReconnect(profileId: profileId)
         statuses.set(.disconnected, profileId: profileId, message: "已取消自动恢复")
         onCountdownTick?()
     }
 
     func remainingSeconds(profileId: String) -> Int? {
-        guard let deadline = deadlines[profileId] else {
+        guard let deadline = countdowns.deadline(profileID: profileId) else {
             return nil
         }
         return max(0, Int(ceil(deadline.timeIntervalSinceNow)))
     }
 
     func attemptReconnect(profile: DisplayProfile, maxAttempts: Int = 1) {
-        timers[profile.id]?.cancel()
-        timers.removeValue(forKey: profile.id)
-        deadlines.removeValue(forKey: profile.id)
+        countdowns.remove(profileID: profile.id)?.cancel()
         statuses.set(.reconnecting, profileId: profile.id)
         onCountdownTick?()
 

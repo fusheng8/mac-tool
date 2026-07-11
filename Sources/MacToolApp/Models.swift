@@ -42,30 +42,44 @@ struct DisplaySnapshot: Codable, Hashable {
     }
 
     func hasSameStableIdentity(as other: DisplaySnapshot) -> Bool {
-        if normalizedIdentityValue(edidUUID) != "", normalizedIdentityValue(edidUUID) == normalizedIdentityValue(other.edidUUID) {
+        if runtimeDisplayID != 0, other.runtimeDisplayID != 0, runtimeDisplayID == other.runtimeDisplayID {
             return true
         }
-        if normalizedIdentityValue(alphanumericSerial) != "", normalizedIdentityValue(alphanumericSerial) == normalizedIdentityValue(other.alphanumericSerial) {
-            return true
+
+        let identities: [(String?, String?)] = [
+            (Self.normalizedIdentity(edidUUID), Self.normalizedIdentity(other.edidUUID)),
+            (Self.normalizedIdentity(alphanumericSerial), Self.normalizedIdentity(other.alphanumericSerial)),
+            (vendorModelSerialIdentity, other.vendorModelSerialIdentity),
+            (Self.normalizedIdentity(ioLocation), Self.normalizedIdentity(other.ioLocation))
+        ]
+        for (lhs, rhs) in identities {
+            if let lhs, let rhs {
+                return lhs == rhs
+            }
         }
-        if normalizedIdentityValue(vendorId) != "",
-           normalizedIdentityValue(modelId) != "",
-           normalizedIdentityValue(serialNumber) != "",
-           normalizedIdentityValue(vendorId) == normalizedIdentityValue(other.vendorId),
-           normalizedIdentityValue(modelId) == normalizedIdentityValue(other.modelId),
-           normalizedIdentityValue(serialNumber) == normalizedIdentityValue(other.serialNumber) {
-            return true
-        }
-        if normalizedIdentityValue(ioLocation) != "", normalizedIdentityValue(ioLocation) == normalizedIdentityValue(other.ioLocation) {
-            return true
-        }
-        return normalizedIdentityValue(displayName) != ""
-            && normalizedIdentityValue(displayName) == normalizedIdentityValue(other.displayName)
+
+        let hasStrongIdentity = identities.contains { $0.0 != nil || $0.1 != nil }
+        guard !hasStrongIdentity else { return false }
+        return Self.normalizedIdentity(displayName) == Self.normalizedIdentity(other.displayName)
+            && Self.normalizedIdentity(displayName) != nil
             && isBuiltIn == other.isBuiltIn
     }
 
-    private func normalizedIdentityValue(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    var vendorModelSerialIdentity: String? {
+        guard let vendor = Self.normalizedIdentity(vendorId),
+              let model = Self.normalizedIdentity(modelId),
+              let serial = Self.normalizedIdentity(serialNumber) else { return nil }
+        return "\(vendor)|\(model)|\(serial)"
+    }
+
+    static func normalizedIdentity(_ value: String) -> String? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        let significant = normalized
+            .replacingOccurrences(of: "0x", with: "")
+            .filter { $0.isLetter || $0.isNumber }
+        guard !significant.isEmpty, significant.contains(where: { $0 != "0" }) else { return nil }
+        return normalized
     }
 
     enum CodingKeys: String, CodingKey {
@@ -135,6 +149,10 @@ struct DisplayMatchRule: Codable, Hashable {
     var ioLocation: String
     var matchThreshold: Int
 
+    static func normalizedThreshold(_ value: Int) -> Int {
+        min(100, max(1, value))
+    }
+
     static let empty = DisplayMatchRule(
         displayName: "",
         edidUUID: "",
@@ -178,7 +196,7 @@ struct DisplayMatchRule: Codable, Hashable {
         self.manufacturer = manufacturer
         self.alphanumericSerial = alphanumericSerial
         self.ioLocation = ioLocation
-        self.matchThreshold = matchThreshold
+        self.matchThreshold = Self.normalizedThreshold(matchThreshold)
     }
 
     init(from decoder: Decoder) throws {
@@ -191,7 +209,9 @@ struct DisplayMatchRule: Codable, Hashable {
         manufacturer = try container.decodeIfPresent(String.self, forKey: .manufacturer) ?? ""
         alphanumericSerial = try container.decodeIfPresent(String.self, forKey: .alphanumericSerial) ?? ""
         ioLocation = try container.decodeIfPresent(String.self, forKey: .ioLocation) ?? ""
-        matchThreshold = try container.decodeIfPresent(Int.self, forKey: .matchThreshold) ?? 80
+        matchThreshold = Self.normalizedThreshold(
+            try container.decodeIfPresent(Int.self, forKey: .matchThreshold) ?? 80
+        )
     }
 }
 
@@ -263,7 +283,7 @@ struct DisconnectConfig: Codable, Hashable {
         self.enabled = enabled
         self.allowSoftDisconnect = allowSoftDisconnect
         self.autoReconnect = autoReconnect
-        self.autoReconnectDelaySeconds = autoReconnectDelaySeconds
+        self.autoReconnectDelaySeconds = Self.normalizedReconnectDelay(autoReconnectDelaySeconds)
         self.externalOnly = externalOnly
         self.confirmBeforeDisconnect = confirmBeforeDisconnect
     }
@@ -273,9 +293,15 @@ struct DisconnectConfig: Codable, Hashable {
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         allowSoftDisconnect = try container.decodeIfPresent(Bool.self, forKey: .allowSoftDisconnect) ?? false
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? true
-        autoReconnectDelaySeconds = try container.decodeIfPresent(Int.self, forKey: .autoReconnectDelaySeconds) ?? 30
+        autoReconnectDelaySeconds = Self.normalizedReconnectDelay(
+            try container.decodeIfPresent(Int.self, forKey: .autoReconnectDelaySeconds) ?? 30
+        )
         externalOnly = try container.decodeIfPresent(Bool.self, forKey: .externalOnly) ?? true
         confirmBeforeDisconnect = try container.decodeIfPresent(Bool.self, forKey: .confirmBeforeDisconnect) ?? true
+    }
+
+    static func normalizedReconnectDelay(_ value: Int) -> Int {
+        min(3600, max(5, value))
     }
 }
 
@@ -498,11 +524,11 @@ struct ClipboardConfig: Codable, Hashable {
         self.hotKeyEnabled = hotKeyEnabled
         self.hotKey = hotKey
         self.shortcuts = shortcuts
-        self.maxHistoryCount = maxHistoryCount
+        self.maxHistoryCount = Self.normalizedMaxHistoryCount(maxHistoryCount)
         self.recordingPaused = recordingPaused
         self.excludeKnownPasswordManagers = excludeKnownPasswordManagers
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
-        self.retentionDays = max(0, retentionDays)
+        self.retentionDays = Self.normalizedRetentionDays(retentionDays)
         self.pollIntervalMilliseconds = Self.normalizedPollIntervalMilliseconds(pollIntervalMilliseconds)
         self.structuredPreviewLimitKB = Self.normalizedStructuredPreviewLimitKB(structuredPreviewLimitKB)
     }
@@ -513,11 +539,15 @@ struct ClipboardConfig: Codable, Hashable {
         hotKeyEnabled = try container.decodeIfPresent(Bool.self, forKey: .hotKeyEnabled) ?? true
         hotKey = try container.decodeIfPresent(HotKeyConfig.self, forKey: .hotKey) ?? .defaultClipboard
         shortcuts = try container.decodeIfPresent(ClipboardShortcutSettings.self, forKey: .shortcuts) ?? .defaultValue
-        maxHistoryCount = try container.decodeIfPresent(Int.self, forKey: .maxHistoryCount) ?? 1000
+        maxHistoryCount = Self.normalizedMaxHistoryCount(
+            try container.decodeIfPresent(Int.self, forKey: .maxHistoryCount) ?? 1000
+        )
         recordingPaused = try container.decodeIfPresent(Bool.self, forKey: .recordingPaused) ?? false
         excludeKnownPasswordManagers = try container.decodeIfPresent(Bool.self, forKey: .excludeKnownPasswordManagers) ?? true
         excludedBundleIdentifiers = try container.decodeIfPresent([String].self, forKey: .excludedBundleIdentifiers) ?? []
-        retentionDays = max(0, try container.decodeIfPresent(Int.self, forKey: .retentionDays) ?? ClipboardPrivacyPolicy.defaultRetentionDays)
+        retentionDays = Self.normalizedRetentionDays(
+            try container.decodeIfPresent(Int.self, forKey: .retentionDays) ?? ClipboardPrivacyPolicy.defaultRetentionDays
+        )
         pollIntervalMilliseconds = Self.normalizedPollIntervalMilliseconds(
             try container.decodeIfPresent(Int.self, forKey: .pollIntervalMilliseconds) ?? 650
         )
@@ -528,6 +558,26 @@ struct ClipboardConfig: Codable, Hashable {
 
     static func normalizedPollIntervalMilliseconds(_ value: Int) -> Int {
         min(10_000, max(200, value))
+    }
+
+    static func normalizedMaxHistoryCount(_ value: Int) -> Int {
+        min(10_000, max(10, value))
+    }
+
+    static func normalizedRetentionDays(_ value: Int) -> Int {
+        min(365, max(0, value))
+    }
+
+    func normalized() -> ClipboardConfig {
+        var result = self
+        result.maxHistoryCount = Self.normalizedMaxHistoryCount(maxHistoryCount)
+        result.retentionDays = Self.normalizedRetentionDays(retentionDays)
+        result.pollIntervalMilliseconds = Self.normalizedPollIntervalMilliseconds(pollIntervalMilliseconds)
+        result.structuredPreviewLimitKB = Self.normalizedStructuredPreviewLimitKB(structuredPreviewLimitKB)
+        result.excludedBundleIdentifiers = excludedBundleIdentifiers
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        return result
     }
 
     static func normalizedStructuredPreviewLimitKB(_ value: Int) -> Int {
@@ -921,6 +971,26 @@ struct ContextMenuConfig: Codable, Hashable {
 struct ClipboardStoredType: Codable, Hashable {
     var type: String
     var data: Data
+    var itemIndex: Int
+
+    init(type: String, data: Data, itemIndex: Int = 0) {
+        self.type = type
+        self.data = data
+        self.itemIndex = max(0, itemIndex)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case data
+        case itemIndex
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+        data = try container.decode(Data.self, forKey: .data)
+        itemIndex = max(0, try container.decodeIfPresent(Int.self, forKey: .itemIndex) ?? 0)
+    }
 }
 
 struct ClipboardContentMetadata: Codable, Hashable {
@@ -1056,6 +1126,29 @@ struct AppConfig: Codable {
         archive: .defaultValue,
         contextMenu: .defaultValue
     )
+
+    func normalized() -> AppConfig {
+        var result = self
+        result.schemaVersion = Self.currentSchemaVersion
+        result.clipboard = clipboard.normalized()
+        result.contextMenu = contextMenu.normalized()
+        if result.archive.enabledFormats.isEmpty {
+            result.archive = .defaultValue
+        } else {
+            result.archive.defaultCompressionLevel = ArchiveConfig.normalizedCompressionLevel(
+                result.archive.defaultCompressionLevel
+            )
+        }
+        result.profiles = profiles.map { profile in
+            var normalizedProfile = profile
+            normalizedProfile.match.matchThreshold = DisplayMatchRule.normalizedThreshold(profile.match.matchThreshold)
+            normalizedProfile.disconnect.autoReconnectDelaySeconds = DisconnectConfig.normalizedReconnectDelay(
+                profile.disconnect.autoReconnectDelaySeconds
+            )
+            return normalizedProfile
+        }
+        return result
+    }
 }
 
 struct AppState: Codable {

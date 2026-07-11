@@ -15,6 +15,7 @@ enum ArchiveActionError: LocalizedError {
     case expectedSingleRegularFile(String)
     case passwordProtectedArchive
     case passwordUnsupported(String)
+    case invalidArchiveName(String)
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +26,7 @@ enum ArchiveActionError: LocalizedError {
         case .expectedSingleRegularFile(let format): return "\(format) 只能压缩单个普通文件"
         case .passwordProtectedArchive: return "压缩包需要密码"
         case .passwordUnsupported(let format): return "\(format) 不支持设置压缩密码，请选择 ZIP、7Z 或 RAR。"
+        case .invalidArchiveName(let message): return message
         }
     }
 }
@@ -240,16 +242,21 @@ final class ArchiveActionExecutor {
         guard urls.allSatisfy({ $0.deletingLastPathComponent().standardizedFileURL == parent }) else {
             throw ArchiveActionError.mixedSourceDirectories
         }
+        let archiveFileName = try Self.validatedArchiveFileName(
+            options.archiveName,
+            format: options.format,
+            parent: parent
+        )
         let destination = uniqueURL(
             in: parent,
-            preferredName: archiveFileName(options.archiveName, format: options.format),
+            preferredName: archiveFileName,
             isDirectory: false
         )
         guard options.wrapInFolder else { return (parent, urls.map(\.lastPathComponent), destination, {}) }
 
         let tempRoot = fileManager.temporaryDirectory
             .appendingPathComponent("MacAssistantCompression-\(UUID().uuidString)", isDirectory: true)
-        let folderName = archiveBaseName(URL(fileURLWithPath: archiveFileName(options.archiveName, format: options.format)))
+        let folderName = archiveBaseName(URL(fileURLWithPath: archiveFileName))
         let folder = tempRoot.appendingPathComponent(folderName, isDirectory: true)
         try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
         for url in urls { try fileManager.copyItem(at: url, to: folder.appendingPathComponent(url.lastPathComponent)) }
@@ -326,11 +333,25 @@ final class ArchiveActionExecutor {
         return source
     }
 
-    private func archiveFileName(_ name: String, format: ArchiveFormat) -> String {
+    static func validatedArchiveFileName(_ name: String, format: ArchiveFormat, parent: URL) throws -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = trimmed.isEmpty ? "压缩包" : trimmed
+        guard !trimmed.isEmpty else {
+            throw ArchiveActionError.invalidArchiveName("压缩包文件名不能为空。")
+        }
+        guard trimmed != ".", trimmed != "..",
+              !trimmed.contains("/"), !trimmed.contains("\\"),
+              !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw ArchiveActionError.invalidArchiveName("压缩包文件名不能包含路径分隔符、控制字符或相对路径。")
+        }
         let suffix = ".\(format.archiveExtension)"
-        return base.lowercased().hasSuffix(suffix) ? base : base + suffix
+        let fileName = trimmed.lowercased().hasSuffix(suffix) ? trimmed : trimmed + suffix
+        let standardizedParent = parent.standardizedFileURL
+        let destination = standardizedParent.appendingPathComponent(fileName).standardizedFileURL
+        guard destination.deletingLastPathComponent() == standardizedParent,
+              destination.lastPathComponent == fileName else {
+            throw ArchiveActionError.invalidArchiveName("压缩包文件名必须是当前目录中的单个文件名。")
+        }
+        return fileName
     }
 
     private func archiveBaseName(_ url: URL) -> String {

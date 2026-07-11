@@ -31,6 +31,44 @@ final class ClipboardHistoryStoreTests: XCTestCase {
         XCTAssertTrue(try containsFile(in: fixture.blobDirectory))
     }
 
+    func testMultiplePasteboardItemsRoundTripAndAffectDuplicateHash() throws {
+        let fixture = try makeStoreFixture()
+        let firstType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("first".utf8), itemIndex: 0)
+        let secondType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("second".utf8), itemIndex: 1)
+        let firstItem = makeItem(preview: "two items", plainText: "first\nsecond", storedTypes: [firstType, secondType])
+        _ = try fixture.store.insert(firstItem, maxHistoryCount: 20, retentionDays: 30)
+
+        XCTAssertEqual(try fixture.store.loadStoredTypes(itemID: firstItem.id), [firstType, secondType])
+
+        let regrouped = makeItem(
+            preview: "one item",
+            plainText: "first\nsecond",
+            storedTypes: [firstType, ClipboardStoredType(type: secondType.type, data: secondType.data, itemIndex: 0)]
+        )
+        let loaded = try fixture.store.insert(regrouped, maxHistoryCount: 20, retentionDays: 30)
+        XCTAssertEqual(loaded.count, 2)
+    }
+
+    func testLegacyStoredTypeDefaultsToFirstPasteboardItem() throws {
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "type": NSPasteboard.PasteboardType.string.rawValue,
+            "data": Data("legacy".utf8).base64EncodedString()
+        ])
+        let decoded = try JSONDecoder().decode(ClipboardStoredType.self, from: payload)
+        XCTAssertEqual(decoded.itemIndex, 0)
+    }
+
+    func testNegativeSearchLimitReturnsEmptyInsteadOfCrashing() throws {
+        let fixture = try makeStoreFixture()
+        let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("safe".utf8))
+        _ = try fixture.store.insert(
+            makeItem(preview: "safe", plainText: "safe", storedTypes: [storedType]),
+            maxHistoryCount: 20,
+            retentionDays: 30
+        )
+        XCTAssertTrue(try fixture.store.search("", limit: -1).isEmpty)
+    }
+
     func testDuplicateInsertKeepsFavoriteState() throws {
         let fixture = try makeStoreFixture()
         let storedType = ClipboardStoredType(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("same".utf8))
@@ -172,9 +210,54 @@ final class ClipboardHistoryStoreTests: XCTestCase {
         XCTAssertThrowsError(try reopened.loadHistory(maxHistoryCount: 20, retentionDays: 30))
     }
 
+    func testFailedDuplicateInsertKeepsOriginalBlobReadable() throws {
+        let crypto = ControllableClipboardCryptoProvider()
+        let fixture = try makeStoreFixture(cryptoProvider: crypto)
+        let storedType = ClipboardStoredType(type: "public.html", data: Data(repeating: 65, count: 40_000))
+        let original = makeItem(preview: "same", plainText: "same", storedTypes: [storedType], isFavorite: true)
+        _ = try fixture.store.insert(original, maxHistoryCount: 20, retentionDays: 30)
+
+        crypto.failAfterSuccessfulSeals(1)
+        let replacement = makeItem(preview: "same", plainText: "same", storedTypes: [storedType])
+        XCTAssertThrowsError(try fixture.store.insert(replacement, maxHistoryCount: 20, retentionDays: 30))
+
+        crypto.disableFailure()
+        let loaded = try fixture.store.loadHistory(maxHistoryCount: 20, retentionDays: 30)
+        XCTAssertEqual(loaded.map(\.id), [original.id])
+        XCTAssertEqual(try fixture.store.loadStoredTypes(itemID: original.id), [storedType])
+        XCTAssertTrue(try containsFile(in: fixture.blobDirectory))
+    }
+
+    func testFailedInsertRemovesNewBlobDirectory() throws {
+        let crypto = ControllableClipboardCryptoProvider()
+        let fixture = try makeStoreFixture(cryptoProvider: crypto)
+        let firstBlob = ClipboardStoredType(type: "public.html", data: Data(repeating: 65, count: 40_000))
+        let secondBlob = ClipboardStoredType(type: "public.rtf", data: Data(repeating: 66, count: 40_000))
+        crypto.failAfterSuccessfulSeals(2)
+
+        XCTAssertThrowsError(try fixture.store.insert(
+            makeItem(preview: "failure", plainText: "", storedTypes: [firstBlob, secondBlob]),
+            maxHistoryCount: 20,
+            retentionDays: 30
+        ))
+        XCTAssertFalse(try containsFile(in: fixture.blobDirectory))
+    }
+
+    func testLoadHistoryRemovesOrphanedBlobDirectory() throws {
+        let fixture = try makeStoreFixture()
+        let orphan = fixture.blobDirectory.appendingPathComponent("orphan", isDirectory: true)
+        try FileManager.default.createDirectory(at: orphan, withIntermediateDirectories: true)
+        try Data("orphan".utf8).write(to: orphan.appendingPathComponent("0.blob"))
+
+        _ = try fixture.store.loadHistory(maxHistoryCount: 20, retentionDays: 30)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+    }
+
     private func makeStoreFixture(
         rootDirectory: URL? = nil,
-        legacyHistoryURL: URL? = nil
+        legacyHistoryURL: URL? = nil,
+        cryptoProvider: any ClipboardCryptoProviding = EphemeralClipboardCryptoProvider()
     ) throws -> (store: ClipboardHistoryStore, rootDirectory: URL, blobDirectory: URL, thumbnailDirectory: URL) {
         let root = try rootDirectory ?? makeTemporaryDirectory()
         let clipboardDirectory = root.appendingPathComponent("Clipboard", isDirectory: true)
@@ -187,7 +270,7 @@ final class ClipboardHistoryStoreTests: XCTestCase {
             thumbnailDirectory: thumbnailDirectory,
             thumbnailCacheDirectory: clipboardDirectory.appendingPathComponent("thumbnail-cache", isDirectory: true),
             legacyHistoryURL: legacyHistoryURL,
-            cryptoProvider: EphemeralClipboardCryptoProvider()
+            cryptoProvider: cryptoProvider
         )
         return (store, root, blobDirectory, thumbnailDirectory)
     }
@@ -265,4 +348,44 @@ final class ClipboardHistoryStoreTests: XCTestCase {
         }
         return data
     }
+}
+
+private enum TestClipboardCryptoError: Error {
+    case forcedFailure
+}
+
+private final class ControllableClipboardCryptoProvider: ClipboardCryptoProviding, @unchecked Sendable {
+    private let provider = EphemeralClipboardCryptoProvider()
+    private let lock = NSLock()
+    private var remainingSuccessfulSeals: Int?
+
+    var statusDescription: String { provider.statusDescription }
+
+    func failAfterSuccessfulSeals(_ count: Int) {
+        lock.lock()
+        remainingSuccessfulSeals = count
+        lock.unlock()
+    }
+
+    func disableFailure() {
+        lock.lock()
+        remainingSuccessfulSeals = nil
+        lock.unlock()
+    }
+
+    func seal(_ data: Data) throws -> Data {
+        lock.lock()
+        if let remaining = remainingSuccessfulSeals {
+            if remaining == 0 {
+                lock.unlock()
+                throw TestClipboardCryptoError.forcedFailure
+            }
+            remainingSuccessfulSeals = remaining - 1
+        }
+        lock.unlock()
+        return try provider.seal(data)
+    }
+
+    func open(_ data: Data) throws -> Data { try provider.open(data) }
+    func authenticationHash(_ data: Data) -> String { provider.authenticationHash(data) }
 }

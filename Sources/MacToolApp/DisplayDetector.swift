@@ -3,7 +3,16 @@ import CoreGraphics
 import Foundation
 
 final class DisplayDetector {
+    private let displayProvider: (() -> [DisplaySnapshot])?
+
+    init(displayProvider: (() -> [DisplaySnapshot])? = nil) {
+        self.displayProvider = displayProvider
+    }
+
     func onlineDisplays() -> [DisplaySnapshot] {
+        if let displayProvider {
+            return displayProvider()
+        }
         var buffer = Array(repeating: DCLDisplayInfo(), count: Int(DCL_MAX_DISPLAYS))
         let count = DCLCopyOnlineDisplays(&buffer, Int32(buffer.count))
         var displays = count > 0 ? buffer.prefix(Int(count)).map(Self.snapshot) : []
@@ -25,52 +34,59 @@ final class DisplayDetector {
     }
 
     func findDisplay(for profile: DisplayProfile) -> DisplaySnapshot? {
-        onlineDisplays()
+        let candidates = onlineDisplays()
             .map { display in (display, matchScore(display: display, profile: profile)) }
             .filter { $0.1.matches }
-            .sorted { $0.1.score > $1.1.score }
-            .first?
-            .0
+        guard let bestScore = candidates.map({ $0.1.score }).max() else { return nil }
+        let best = candidates.filter { $0.1.score == bestScore }
+        guard best.count == 1 else { return nil }
+        return best[0].0
     }
 
     func matchScore(display: DisplaySnapshot, profile: DisplayProfile) -> (matches: Bool, score: Int) {
-        if matchesConfigured(profile.match.edidUUID, display.edidUUID) {
-            return (true, 500)
+        switch profile.matchMode {
+        case .strict:
+            return strictMatchScore(display: display, rule: profile.match)
+        case .weighted:
+            let score = weightedMatchScore(display: display, rule: profile.match)
+            return (score >= DisplayMatchRule.normalizedThreshold(profile.match.matchThreshold), score)
         }
-        if matchesConfigured(profile.match.alphanumericSerial, display.alphanumericSerial) {
-            return (true, 400)
-        }
-        if matchesVendorModelSerial(display: display, rule: profile.match) {
-            return (true, 300)
-        }
-        if matchesConfigured(profile.match.ioLocation, display.ioLocation) {
-            return (true, 200)
-        }
-        if matchesConfigured(profile.match.displayName, display.displayName) {
-            return (true, 100)
+    }
+
+    private func strictMatchScore(display: DisplaySnapshot, rule: DisplayMatchRule) -> (matches: Bool, score: Int) {
+        let candidates: [(String?, String?, Int)] = [
+            (DisplaySnapshot.normalizedIdentity(rule.edidUUID), DisplaySnapshot.normalizedIdentity(display.edidUUID), 100),
+            (DisplaySnapshot.normalizedIdentity(rule.alphanumericSerial), DisplaySnapshot.normalizedIdentity(display.alphanumericSerial), 90),
+            (vendorModelSerialIdentity(rule), display.vendorModelSerialIdentity, 80),
+            (DisplaySnapshot.normalizedIdentity(rule.ioLocation), DisplaySnapshot.normalizedIdentity(display.ioLocation), 60),
+            (DisplaySnapshot.normalizedIdentity(rule.displayName), DisplaySnapshot.normalizedIdentity(display.displayName), 20)
+        ]
+        for (expected, actual, score) in candidates where expected != nil {
+            return (expected == actual, expected == actual ? score : 0)
         }
         return (false, 0)
     }
 
+    private func weightedMatchScore(display: DisplaySnapshot, rule: DisplayMatchRule) -> Int {
+        var score = 0
+        if matchesConfigured(rule.edidUUID, display.edidUUID) { score += 100 }
+        if matchesConfigured(rule.alphanumericSerial, display.alphanumericSerial) { score += 90 }
+        if let expected = vendorModelSerialIdentity(rule), expected == display.vendorModelSerialIdentity { score += 80 }
+        if matchesConfigured(rule.ioLocation, display.ioLocation) { score += 60 }
+        if matchesConfigured(rule.displayName, display.displayName) { score += 20 }
+        return min(100, score)
+    }
+
     private func matchesConfigured(_ expected: String, _ actual: String) -> Bool {
-        let normalizedExpected = normalizedIdentityValue(expected)
-        return !normalizedExpected.isEmpty && normalizedExpected == normalizedIdentityValue(actual)
+        guard let expected = DisplaySnapshot.normalizedIdentity(expected) else { return false }
+        return expected == DisplaySnapshot.normalizedIdentity(actual)
     }
 
-    private func matchesVendorModelSerial(display: DisplaySnapshot, rule: DisplayMatchRule) -> Bool {
-        let vendor = normalizedIdentityValue(rule.vendorId)
-        let model = normalizedIdentityValue(rule.modelId)
-        let serial = normalizedIdentityValue(rule.serialNumber)
-        return !vendor.isEmpty
-            && !model.isEmpty
-            && !serial.isEmpty
-            && vendor == normalizedIdentityValue(display.vendorId)
-            && model == normalizedIdentityValue(display.modelId)
-            && serial == normalizedIdentityValue(display.serialNumber)
-    }
-
-    private func normalizedIdentityValue(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    private func vendorModelSerialIdentity(_ rule: DisplayMatchRule) -> String? {
+        guard let vendor = DisplaySnapshot.normalizedIdentity(rule.vendorId),
+              let model = DisplaySnapshot.normalizedIdentity(rule.modelId),
+              let serial = DisplaySnapshot.normalizedIdentity(rule.serialNumber) else { return nil }
+        return "\(vendor)|\(model)|\(serial)"
     }
 
     private static func snapshot(_ info: DCLDisplayInfo) -> DisplaySnapshot {

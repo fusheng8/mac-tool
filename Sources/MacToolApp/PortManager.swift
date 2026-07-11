@@ -16,6 +16,7 @@ struct PortUsage: Hashable, Identifiable {
     let user: String
     let executablePath: String
     let bundlePath: String?
+    let processIdentity: PortProcessIdentity?
 
     var listenAddress: String {
         Self.parseAddress(endpoint: endpoint)
@@ -129,6 +130,7 @@ struct ProcessResourceSnapshot: Hashable {
 enum PortManagerError: LocalizedError {
     case commandFailed(String)
     case killFailed(pid: Int32, reason: String)
+    case staleProcess(String)
 
     var errorDescription: String? {
         switch self {
@@ -136,11 +138,188 @@ enum PortManagerError: LocalizedError {
             return message
         case .killFailed(let pid, let reason):
             return "无法停止进程 \(pid)：\(reason)"
+        case .staleProcess(let message):
+            return message
         }
     }
 }
 
+struct PortProcessIdentity: Hashable {
+    let pid: Int32
+    let startTimeMicroseconds: UInt64
+    let executablePath: String
+}
+
+protocol PortProcessInspecting {
+    func identity(pid: Int32) -> PortProcessIdentity?
+}
+
+protocol PortSignalSending {
+    func send(_ signal: Int32, to pid: Int32) throws
+}
+
+struct DarwinPortSignalSender: PortSignalSending {
+    func send(_ signal: Int32, to pid: Int32) throws {
+        if Darwin.kill(pid, signal) != 0 {
+            throw PortManagerError.killFailed(pid: pid, reason: String(cString: strerror(errno)))
+        }
+    }
+}
+
+struct DarwinPortProcessInspector: PortProcessInspecting {
+    func identity(pid: Int32) -> PortProcessIdentity? {
+        var info = proc_bsdinfo()
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: UInt8.self, capacity: MemoryLayout<proc_bsdinfo>.size) { rebound in
+                proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, rebound, Int32(MemoryLayout<proc_bsdinfo>.size))
+            }
+        }
+        guard result == MemoryLayout<proc_bsdinfo>.size else { return nil }
+        return PortProcessIdentity(
+            pid: pid,
+            startTimeMicroseconds: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+            executablePath: PortManager.executablePath(pid: pid)
+        )
+    }
+}
+
+struct PortCommandOutput {
+    let exitCode: Int32
+    let stdout: Data
+    let stderr: Data
+}
+
+protocol PortCommandRunning {
+    func run(executableURL: URL, arguments: [String], timeout: TimeInterval, outputLimit: Int) throws -> PortCommandOutput
+}
+
+final class PortCommandRunner: PortCommandRunning {
+    private final class Accumulator: @unchecked Sendable {
+        private let lock = NSLock()
+        private let limit: Int
+        private var data = Data()
+        private var exceeded = false
+
+        init(limit: Int) {
+            self.limit = limit
+        }
+
+        func append(_ chunk: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard data.count < limit else {
+                exceeded = exceeded || !chunk.isEmpty
+                return
+            }
+            let remaining = limit - data.count
+            data.append(chunk.prefix(remaining))
+            exceeded = exceeded || chunk.count > remaining
+        }
+
+        func snapshot() -> (data: Data, exceeded: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (data, exceeded)
+        }
+    }
+
+    func run(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval = 15,
+        outputLimit: Int = 16 * 1_024 * 1_024
+    ) throws -> PortCommandOutput {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try launchProcessSafely(process, executableURL: executableURL)
+        } catch {
+            throw PortManagerError.commandFailed("无法运行 \(executableURL.lastPathComponent)：\(error.localizedDescription)")
+        }
+
+        let stdout = Accumulator(limit: outputLimit)
+        let stderr = Accumulator(limit: outputLimit)
+        let readers = DispatchGroup()
+        drain(stdoutPipe.fileHandleForReading, into: stdout, group: readers)
+        drain(stderrPipe.fileHandleForReading, into: stderr, group: readers)
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.03)
+        }
+        if process.isRunning {
+            process.terminate()
+            let terminateDeadline = Date().addingTimeInterval(0.3)
+            while process.isRunning && Date() < terminateDeadline {
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            if process.isRunning {
+                Darwin.kill(process.processIdentifier, SIGKILL)
+            }
+            process.waitUntilExit()
+            guard waitForReaders(readers, stdoutPipe: stdoutPipe, stderrPipe: stderrPipe) else {
+                throw PortManagerError.commandFailed("外部命令已终止，但输出管道未关闭：\(executableURL.lastPathComponent)")
+            }
+            throw PortManagerError.commandFailed("外部命令超时，已终止：\(executableURL.lastPathComponent)")
+        }
+
+        guard waitForReaders(readers, stdoutPipe: stdoutPipe, stderrPipe: stderrPipe) else {
+            throw PortManagerError.commandFailed("外部命令输出管道超时未关闭：\(executableURL.lastPathComponent)")
+        }
+        let capturedStdout = stdout.snapshot()
+        let capturedStderr = stderr.snapshot()
+        if capturedStdout.exceeded || capturedStderr.exceeded {
+            throw PortManagerError.commandFailed("外部命令输出超过安全限制：\(executableURL.lastPathComponent)")
+        }
+        return PortCommandOutput(
+            exitCode: process.terminationStatus,
+            stdout: capturedStdout.data,
+            stderr: capturedStderr.data
+        )
+    }
+
+    private func drain(_ handle: FileHandle, into accumulator: Accumulator, group: DispatchGroup) {
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            defer { group.leave() }
+            while true {
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return }
+                accumulator.append(chunk)
+            }
+        }
+    }
+
+    private func waitForReaders(_ readers: DispatchGroup, stdoutPipe: Pipe, stderrPipe: Pipe) -> Bool {
+        guard readers.wait(timeout: .now() + 2) == .timedOut else { return true }
+        stdoutPipe.fileHandleForReading.closeFile()
+        stderrPipe.fileHandleForReading.closeFile()
+        return false
+    }
+}
+
 final class PortManager {
+    private let commandRunner: any PortCommandRunning
+    private let processInspector: any PortProcessInspecting
+    private let signalSender: any PortSignalSending
+
+    init(
+        commandRunner: any PortCommandRunning = PortCommandRunner(),
+        processInspector: any PortProcessInspecting = DarwinPortProcessInspector(),
+        signalSender: any PortSignalSending = DarwinPortSignalSender()
+    ) {
+        self.commandRunner = commandRunner
+        self.processInspector = processInspector
+        self.signalSender = signalSender
+    }
+
     func shellKillCommand(pid: Int32, method: PortStopMethod) -> String? {
         switch method {
         case .graceful:
@@ -180,16 +359,21 @@ final class PortManager {
             }
     }
 
-    func forceStop(pid: Int32) throws {
-        try stop(pid: pid, method: .kill)
-    }
-
-    func stop(pid: Int32, method: PortStopMethod) throws {
+    func stop(_ usage: PortUsage, method: PortStopMethod) throws {
+        let pid = usage.pid
         guard pid > 0 else {
             throw PortManagerError.killFailed(pid: pid, reason: "无效 PID")
         }
         guard pid != getpid() else {
             throw PortManagerError.killFailed(pid: pid, reason: "不能停止当前应用")
+        }
+        guard let expectedIdentity = usage.processIdentity,
+              let currentIdentity = processInspector.identity(pid: pid),
+              currentIdentity == expectedIdentity else {
+            throw PortManagerError.staleProcess("端口列表已过期：PID \(pid) 已退出或已被其他进程复用，请刷新后重试。")
+        }
+        guard try processStillOwnsEndpoint(usage) else {
+            throw PortManagerError.staleProcess("端口列表已过期：进程 \(pid) 已不再占用 \(usage.endpoint)，请刷新后重试。")
         }
 
         switch method {
@@ -226,60 +410,51 @@ final class PortManager {
     }
 
     private func runLsof(arguments: [String]) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = arguments
+        let result = try commandRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/sbin/lsof"),
+            arguments: arguments,
+            timeout: 20,
+            outputLimit: 16 * 1_024 * 1_024
+        )
+        let output = String(decoding: result.stdout, as: UTF8.self)
+        let errorOutput = String(decoding: result.stderr, as: UTF8.self)
 
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        do {
-            try process.run()
-        } catch {
-            throw PortManagerError.commandFailed("无法运行 lsof：\(error.localizedDescription)")
-        }
-
-        process.waitUntilExit()
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: outputData, encoding: .utf8) ?? ""
-        let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-
-        if process.terminationStatus != 0 && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if result.exitCode != 0 && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw PortManagerError.commandFailed(errorOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "lsof 查询失败" : errorOutput)
         }
         return output
     }
 
-    private func sendSignal(_ signal: Int32, pid: Int32) throws {
-        if Darwin.kill(pid, signal) != 0 {
-            throw PortManagerError.killFailed(pid: pid, reason: String(cString: strerror(errno)))
+    private func processStillOwnsEndpoint(_ usage: PortUsage) throws -> Bool {
+        var arguments = ["-nP", "-a", "-p", "\(usage.pid)"]
+        if usage.protocolName == "TCP" {
+            arguments += ["-iTCP", "-sTCP:LISTEN", "-F", "pcLnP"]
+        } else {
+            arguments += ["-iUDP", "-F", "pcLnP"]
+        }
+        return parseLsofOutput(try runLsof(arguments: arguments)).contains {
+            $0.pid == usage.pid
+                && $0.protocolName == usage.protocolName
+                && $0.port == usage.port
+                && $0.endpoint == usage.endpoint
         }
     }
 
+    private func sendSignal(_ signal: Int32, pid: Int32) throws {
+        try signalSender.send(signal, to: pid)
+    }
+
     private func runPS(pid: Int32) throws -> PSProcessInfo {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-p", "\(pid)", "-o", "ppid=", "-o", "pcpu=", "-o", "stat=", "-o", "etime=", "-o", "command="]
+        let result = try commandRunner.run(
+            executableURL: URL(fileURLWithPath: "/bin/ps"),
+            arguments: ["-p", "\(pid)", "-o", "ppid=", "-o", "pcpu=", "-o", "stat=", "-o", "etime=", "-o", "command="],
+            timeout: 10,
+            outputLimit: 1 * 1_024 * 1_024
+        )
+        let output = String(decoding: result.stdout, as: UTF8.self)
+        let errorOutput = String(decoding: result.stderr, as: UTF8.self)
 
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        do {
-            try process.run()
-        } catch {
-            throw PortManagerError.commandFailed("无法运行 ps：\(error.localizedDescription)")
-        }
-
-        process.waitUntilExit()
-        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let errorOutput = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-
-        guard process.terminationStatus == 0 else {
+        guard result.exitCode == 0 else {
             throw PortManagerError.commandFailed(errorOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "ps 查询失败" : errorOutput)
         }
 
@@ -302,24 +477,14 @@ final class PortManager {
     }
 
     private func openFileCount(pid: Int32) throws -> Int {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = ["-nP", "-p", "\(pid)", "-F", "f"]
-
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        do {
-            try process.run()
-        } catch {
-            throw PortManagerError.commandFailed("无法运行 lsof：\(error.localizedDescription)")
-        }
-
-        process.waitUntilExit()
-        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        if process.terminationStatus != 0 && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let result = try commandRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/sbin/lsof"),
+            arguments: ["-nP", "-p", "\(pid)", "-F", "f"],
+            timeout: 20,
+            outputLimit: 16 * 1_024 * 1_024
+        )
+        let output = String(decoding: result.stdout, as: UTF8.self)
+        if result.exitCode != 0 && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw PortManagerError.commandFailed("lsof 查询进程打开文件失败")
         }
         return output.split(separator: "\n").filter { $0.first == "f" }.count
@@ -349,11 +514,13 @@ final class PortManager {
             case "P":
                 currentProtocol = value.uppercased()
             case "n":
-                guard let pid = currentPID, let port = PortEndpointParser.port(from: value) else {
+                guard let pid = currentPID, let parsedEndpoint = PortEndpointParser.parse(value) else {
                     continue
                 }
-                let endpoint = value
-                let protocolName = currentProtocol.isEmpty ? PortEndpointParser.inferredProtocol(from: endpoint) : currentProtocol
+                let protocolName = currentProtocol.isEmpty ? PortEndpointParser.inferredProtocol(from: value) : currentProtocol
+                guard protocolName != "UDP" || !parsedEndpoint.hasRemoteEndpoint else { continue }
+                let endpoint = parsedEndpoint.localDescription
+                let port = parsedEndpoint.localPort
                 let id = "\(pid)-\(protocolName)-\(endpoint)"
                 guard !seenIDs.contains(id) else {
                     continue
@@ -369,7 +536,8 @@ final class PortManager {
                     command: currentCommand,
                     user: currentUser,
                     executablePath: Self.executablePath(pid: pid),
-                    bundlePath: bundlePath
+                    bundlePath: bundlePath,
+                    processIdentity: processInspector.identity(pid: pid)
                 ))
             default:
                 continue
@@ -379,7 +547,7 @@ final class PortManager {
         return results
     }
 
-    private static func executablePath(pid: Int32) -> String {
+    static func executablePath(pid: Int32) -> String {
         var buffer = [CChar](repeating: 0, count: 4096)
         let result = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard result > 0 else {

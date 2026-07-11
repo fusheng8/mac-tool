@@ -9,6 +9,38 @@ enum ClipboardPasteMode {
     case plainText
 }
 
+struct ClipboardChangeTracker {
+    private(set) var lastChangeCount: Int
+
+    init(changeCount: Int) {
+        lastChangeCount = changeCount
+    }
+
+    mutating func reset(to changeCount: Int) {
+        lastChangeCount = changeCount
+    }
+
+    mutating func consumeChange(_ changeCount: Int) -> Bool {
+        guard changeCount != lastChangeCount else { return false }
+        lastChangeCount = changeCount
+        return true
+    }
+}
+
+struct ClipboardSourceAttributionTracker {
+    private(set) var activeProcessIdentifier: pid_t?
+
+    mutating func reset(to processIdentifier: pid_t?) {
+        activeProcessIdentifier = processIdentifier
+    }
+
+    mutating func activate(_ processIdentifier: pid_t?) -> pid_t? {
+        let previous = activeProcessIdentifier
+        activeProcessIdentifier = processIdentifier
+        return previous
+    }
+}
+
 final class ClipboardHistoryController {
     private static let knownPasswordManagerBundleIdentifiers: Set<String> = [
         "com.1password.1password",
@@ -28,7 +60,7 @@ final class ClipboardHistoryController {
     private let processingQueue = DispatchQueue(label: "com.fusheng.mac-tool.clipboard.processing", qos: .utility)
     private let pasteboard = NSPasteboard.general
     private var timer: Timer?
-    private var lastChangeCount: Int
+    private var changeTracker: ClipboardChangeTracker
     private var isWritingForPaste = false
     private var hasLoadedHistory = false
     private(set) var isLoadingHistory = false
@@ -37,6 +69,8 @@ final class ClipboardHistoryController {
     private var targetApplication: NSRunningApplication?
     private var windowController: ClipboardHistoryWindowController?
     private var searchGeneration = 0
+    private var sourceAttributionTracker = ClipboardSourceAttributionTracker()
+    private var applicationActivationObserver: NSObjectProtocol?
 
     private(set) var history: [ClipboardHistoryItem] = [] {
         didSet {
@@ -58,7 +92,7 @@ final class ClipboardHistoryController {
     init(store: ProfileStore) {
         self.store = store
         self.historyStore = ClipboardHistoryStore()
-        self.lastChangeCount = NSPasteboard.general.changeCount
+        self.changeTracker = ClipboardChangeTracker(changeCount: NSPasteboard.general.changeCount)
     }
 
     func start() {
@@ -67,9 +101,11 @@ final class ClipboardHistoryController {
             return
         }
         configureHotKey()
+        startSourceApplicationTracking()
         loadHistoryIfNeeded { [weak self] in
             guard let self, self.store.clipboard.enabled else { return }
             self.pruneExpiredHistory()
+            self.synchronizePasteboardBaseline()
             self.scheduleClipboardTimer()
         }
     }
@@ -78,7 +114,8 @@ final class ClipboardHistoryController {
         timer?.invalidate()
         let interval = TimeInterval(ClipboardConfig.normalizedPollIntervalMilliseconds(store.clipboard.pollIntervalMilliseconds)) / 1000
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.pollPasteboard()
+            guard let self else { return }
+            self.pollPasteboard(sourceApp: self.trackedSourceApplication())
         }
         RunLoop.main.add(timer!, forMode: .common)
     }
@@ -87,22 +124,33 @@ final class ClipboardHistoryController {
         timer?.invalidate()
         timer = nil
         hotKeyManager?.unregister()
+        stopSourceApplicationTracking()
     }
 
     func updateConfiguration() {
+        let wasRecording = timer != nil
         hotKeyManager?.unregister()
         timer?.invalidate()
         timer = nil
         guard store.backgroundTasksAllowed, store.clipboard.enabled else {
+            stopSourceApplicationTracking()
             return
         }
         configureHotKey()
+        startSourceApplicationTracking()
         loadHistoryIfNeeded { [weak self] in
             guard let self, self.store.clipboard.enabled else { return }
             self.pruneExpiredHistory()
             self.trimHistoryToConfiguredLimit()
+            if !wasRecording {
+                self.synchronizePasteboardBaseline()
+            }
             self.scheduleClipboardTimer()
         }
+    }
+
+    private func synchronizePasteboardBaseline() {
+        changeTracker.reset(to: pasteboard.changeCount)
     }
 
     func showHistoryPanel() {
@@ -124,15 +172,11 @@ final class ClipboardHistoryController {
         pasteboard.clearContents()
         switch mode {
         case .formatted:
-            let pasteboardItem = NSPasteboardItem()
-            for storedType in storedTypes(for: item) {
-                pasteboardItem.setData(storedType.data, forType: NSPasteboard.PasteboardType(storedType.type))
-            }
-            pasteboard.writeObjects([pasteboardItem])
+            pasteboard.writeObjects(pasteboardItems(for: item))
         case .plainText:
             pasteboard.setString(item.plainText, forType: .string)
         }
-        lastChangeCount = pasteboard.changeCount
+        changeTracker.reset(to: pasteboard.changeCount)
 
         windowController?.hideIfNeededAfterPaste()
         let app = targetApplication
@@ -151,13 +195,9 @@ final class ClipboardHistoryController {
         if mode == .plainText {
             pasteboard.setString(item.plainText, forType: .string)
         } else {
-            let pasteboardItem = NSPasteboardItem()
-            for storedType in storedTypes(for: item) {
-                pasteboardItem.setData(storedType.data, forType: NSPasteboard.PasteboardType(storedType.type))
-            }
-            pasteboard.writeObjects([pasteboardItem])
+            pasteboard.writeObjects(pasteboardItems(for: item))
         }
-        lastChangeCount = pasteboard.changeCount
+        changeTracker.reset(to: pasteboard.changeCount)
         isWritingForPaste = false
     }
 
@@ -274,6 +314,18 @@ final class ClipboardHistoryController {
         }
     }
 
+    private func pasteboardItems(for item: ClipboardHistoryItem) -> [NSPasteboardItem] {
+        Dictionary(grouping: storedTypes(for: item), by: \.itemIndex)
+            .sorted { $0.key < $1.key }
+            .map { _, storedTypes in
+                let pasteboardItem = NSPasteboardItem()
+                for storedType in storedTypes {
+                    pasteboardItem.setData(storedType.data, forType: NSPasteboard.PasteboardType(storedType.type))
+                }
+                return pasteboardItem
+            }
+    }
+
     func thumbnailURL(for item: ClipboardHistoryItem) -> URL? {
         historyStore.thumbnailURL(for: item)
     }
@@ -315,18 +367,19 @@ final class ClipboardHistoryController {
         hotKeyManager?.register(store.clipboard.hotKey)
     }
 
-    private func pollPasteboard() {
-        guard store.backgroundTasksAllowed, store.clipboard.enabled, pasteboard.changeCount != lastChangeCount else { return }
+    private func pollPasteboard(sourceApp: NSRunningApplication?) {
+        guard store.backgroundTasksAllowed, store.clipboard.enabled,
+              pasteboard.changeCount != changeTracker.lastChangeCount else { return }
         guard hasLoadedHistory else {
             loadHistoryIfNeeded()
             return
         }
-        lastChangeCount = pasteboard.changeCount
+        _ = changeTracker.consumeChange(pasteboard.changeCount)
         guard !isWritingForPaste else { return }
         guard !store.clipboard.recordingPaused else { return }
-        let sourceApp = NSWorkspace.shared.frontmostApplication
-        guard shouldRecordClipboard(from: sourceApp),
-              let capturedItem = capturePasteboardItem(sourceApp: sourceApp) else { return }
+        let resolvedSourceApp = sourceApp ?? NSWorkspace.shared.frontmostApplication
+        guard shouldRecordClipboard(from: resolvedSourceApp),
+              let capturedItem = capturePasteboardItem(sourceApp: resolvedSourceApp) else { return }
 
         let maxHistoryCount = store.clipboard.maxHistoryCount
         let retentionDays = store.clipboard.retentionDays
@@ -368,19 +421,23 @@ final class ClipboardHistoryController {
     }
 
     private func capturePasteboardItem(sourceApp: NSRunningApplication?) -> CapturedPasteboardItem? {
-        guard let pasteboardItem = pasteboard.pasteboardItems?.first else { return nil }
-        let typeNames = Set(pasteboardItem.types.map(\.rawValue))
+        guard let pasteboardItems = pasteboard.pasteboardItems, !pasteboardItems.isEmpty else { return nil }
+        let typeNames = Set(pasteboardItems.flatMap { $0.types.map(\.rawValue) })
         guard !Self.containsSensitiveMarker(Array(typeNames)) else {
             AppLogger.shared.info("已跳过带敏感标记的剪贴板内容。")
             return nil
         }
-        let storedTypes = pasteboardItem.types.compactMap { type -> ClipboardStoredType? in
-            guard let data = pasteboardItem.data(forType: type), data.count <= 2_000_000 else { return nil }
-            return ClipboardStoredType(type: type.rawValue, data: data)
+        let storedTypes = pasteboardItems.enumerated().flatMap { itemIndex, pasteboardItem in
+            pasteboardItem.types.compactMap { type -> ClipboardStoredType? in
+                guard let data = pasteboardItem.data(forType: type), data.count <= 2_000_000 else { return nil }
+                return ClipboardStoredType(type: type.rawValue, data: data, itemIndex: itemIndex)
+            }
         }
         guard !storedTypes.isEmpty else { return nil }
 
-        let plainText = pasteboardItem.string(forType: .string) ?? ""
+        let plainText = pasteboardItems.compactMap { $0.string(forType: .string) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
         return CapturedPasteboardItem(
             sourceApplicationName: sourceApp?.localizedName ?? "未知应用",
             sourceBundleIdentifier: sourceApp?.bundleIdentifier ?? "",
@@ -391,6 +448,37 @@ final class ClipboardHistoryController {
 
     static func containsSensitiveMarker(_ rawTypes: [String]) -> Bool {
         ClipboardPrivacyPolicy.containsSensitiveMarker(rawTypes)
+    }
+
+    private func startSourceApplicationTracking() {
+        sourceAttributionTracker.reset(to: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        guard applicationActivationObserver == nil else { return }
+        applicationActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.sourceApplicationDidActivate(notification)
+        }
+    }
+
+    private func stopSourceApplicationTracking() {
+        guard let applicationActivationObserver else { return }
+        NSWorkspace.shared.notificationCenter.removeObserver(applicationActivationObserver)
+        self.applicationActivationObserver = nil
+        sourceAttributionTracker.reset(to: nil)
+    }
+
+    private func sourceApplicationDidActivate(_ notification: Notification) {
+        let activatedApplication = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            ?? NSWorkspace.shared.frontmostApplication
+        let previousPID = sourceAttributionTracker.activate(activatedApplication?.processIdentifier)
+        let previousApplication = previousPID.flatMap(NSRunningApplication.init(processIdentifier:))
+        pollPasteboard(sourceApp: previousApplication)
+    }
+
+    private func trackedSourceApplication() -> NSRunningApplication? {
+        sourceAttributionTracker.activeProcessIdentifier.flatMap(NSRunningApplication.init(processIdentifier:))
     }
 
     private func makeHistoryItem(from capturedItem: CapturedPasteboardItem) -> ClipboardHistoryItem? {
