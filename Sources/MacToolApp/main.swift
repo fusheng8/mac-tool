@@ -352,7 +352,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             recovery.recoverPendingOnLaunch()
         }
         startDisplayRestoreWatchdogIfNeeded()
-        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc private func handleOpenSettingsNotification(_ notification: Notification) {
@@ -447,7 +446,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             do {
-                NSApp.setActivationPolicy(.regular)
                 let password: String?
                 switch try self.passwordPreflight(for: url) {
                 case .notRequired:
@@ -491,7 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showArchiveOpenError(_ error: Error) {
-        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "无法打开压缩包"
         alert.informativeText = error.localizedDescription
@@ -555,7 +553,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func confirmDestructiveFinderAction(itemID: ContextMenuItemID, urls: [URL]) -> Bool {
-        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -624,7 +621,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showCompressionOptions(urls: [URL]) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            NSApp.setActivationPolicy(.regular)
             let controller = ArchiveCompressionOptionsWindowController(
                 urls: urls,
                 config: self.store.archive,
@@ -634,7 +630,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onCancel: { [weak self] in
                     self?.compressionOptionsWindowController = nil
-                    NSApp.setActivationPolicy(.accessory)
                 }
             )
             self.compressionOptionsWindowController = controller
@@ -667,7 +662,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showArchiveProgress(title: String, detail: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            NSApp.setActivationPolicy(.regular)
             let controller = self.progressWindowController ?? ContextMenuProgressWindowController()
             self.progressWindowController = controller
             controller.showRunning(title: title, detail: detail)
@@ -758,7 +752,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showArchivePasswordError(_ error: Error) {
-        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "无法处理压缩包"
         alert.informativeText = error.localizedDescription

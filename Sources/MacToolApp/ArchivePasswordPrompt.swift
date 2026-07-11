@@ -9,7 +9,6 @@ enum ArchivePasswordPrompt {
 
         var errorMessage: String?
         while true {
-            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
 
             let passwordField = MacSearchField()

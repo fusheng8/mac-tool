@@ -37,6 +37,13 @@ jobs:
         env:
           ALLOW_ADHOC: "1"
         run: scripts/build_app.sh
+      - name: Enforce status bar application policy
+        run: |
+          if rg -n 'setActivationPolicy\(\.regular\)' Sources/MacToolApp; then
+            echo "MacToolApp must remain an accessory application" >&2
+            exit 1
+          fi
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' '.build/Mac助手.app/Contents/Info.plist')" = "true"
       - name: Verify packaged architecture and signatures
         run: |
           app='.build/Mac助手.app'

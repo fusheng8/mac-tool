@@ -77,7 +77,6 @@ final class OnboardingWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("未实现 init(coder:)") }
 
     func show() {
-        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

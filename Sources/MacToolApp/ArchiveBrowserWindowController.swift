@@ -256,7 +256,7 @@ final class ArchiveBrowserWindowController: NSWindowController, NSOutlineViewDat
         self.archivePassword = password
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1320, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
