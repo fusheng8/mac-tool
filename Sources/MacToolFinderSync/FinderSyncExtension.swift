@@ -3,6 +3,7 @@ import Darwin
 import FinderSync
 import Foundation
 import MacToolBridge
+import MacToolCore
 import os.log
 
 final class FinderSyncExtension: FIFinderSync {
@@ -442,7 +443,7 @@ private struct FinderMenuVisibilityContext {
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
                 return false
             }
-            guard let format = FinderArchiveFormat(url: url), archiveConfig.supports(format) else {
+            guard let format = ArchiveFormatDetector.detect(url: url), archiveConfig.supports(format) else {
                 return false
             }
         }
@@ -459,9 +460,9 @@ private struct FinderMenuVisibilityContext {
 }
 
 private struct FinderArchiveConfig: Codable, Hashable {
-    var enabledFormats: Set<FinderArchiveFormat>
+    var enabledFormats: Set<ArchiveFormat>
 
-    static let defaultValue = FinderArchiveConfig(enabledFormats: Set(FinderArchiveFormat.allCases))
+    static let defaultValue = FinderArchiveConfig(enabledFormats: Set(ArchiveFormat.allCases))
 
     static func load() -> FinderArchiveConfig {
         for url in FinderConfigPaths.urls {
@@ -474,48 +475,8 @@ private struct FinderArchiveConfig: Codable, Hashable {
         return .defaultValue
     }
 
-    func supports(_ format: FinderArchiveFormat) -> Bool {
+    func supports(_ format: ArchiveFormat) -> Bool {
         enabledFormats.contains(format)
-    }
-}
-
-private enum FinderArchiveFormat: String, Codable, CaseIterable {
-    case zip
-    case tar
-    case tarGzip
-    case tarBzip2
-    case tarXz
-    case gzip
-    case bzip2
-    case xz
-    case sevenZip
-    case rar
-
-    init?(url: URL) {
-        let fileName = url.lastPathComponent.lowercased()
-        if fileName.hasSuffix(".tar.gz") || fileName.hasSuffix(".tgz") {
-            self = .tarGzip
-        } else if fileName.hasSuffix(".tar.bz2") || fileName.hasSuffix(".tbz2") || fileName.hasSuffix(".tbz") {
-            self = .tarBzip2
-        } else if fileName.hasSuffix(".tar.xz") || fileName.hasSuffix(".txz") {
-            self = .tarXz
-        } else if fileName.hasSuffix(".zip") {
-            self = .zip
-        } else if fileName.hasSuffix(".tar") {
-            self = .tar
-        } else if fileName.hasSuffix(".gz") {
-            self = .gzip
-        } else if fileName.hasSuffix(".bz2") {
-            self = .bzip2
-        } else if fileName.hasSuffix(".xz") {
-            self = .xz
-        } else if fileName.hasSuffix(".7z") {
-            self = .sevenZip
-        } else if fileName.hasSuffix(".rar") {
-            self = .rar
-        } else {
-            return nil
-        }
     }
 }
 

@@ -118,6 +118,10 @@ jobs:
           app='.build/Mac助手.app'
           test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
           test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
+          test "$(lipo -archs "$app/Contents/Helpers/7zz")" = "arm64"
+          test -f "$app/Contents/Resources/ThirdPartyLicenses/7-Zip.txt"
+          "$app/Contents/Helpers/7zz" i >/dev/null
+          codesign --verify --strict "$app/Contents/Helpers/7zz"
           codesign --verify --deep --strict "$app"
           codesign --verify '.build/MacTool.dmg'
           codesign -d --verbose=4 "$app" 2>&1 | grep -F "Authority=$CODESIGN_IDENTITY"
@@ -155,6 +159,10 @@ jobs:
           test "$(readlink "$mount_dir/Applications")" = "/Applications"
           test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
           test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
+          test "$(lipo -archs "$app/Contents/Helpers/7zz")" = "arm64"
+          test -f "$app/Contents/Resources/ThirdPartyLicenses/7-Zip.txt"
+          "$app/Contents/Helpers/7zz" i >/dev/null
+          codesign --verify --strict "$app/Contents/Helpers/7zz"
           codesign --verify --deep --strict "$app"
           codesign -d --verbose=4 "$app" 2>&1 | grep -E 'flags=.*runtime'
           codesign -d --verbose=4 "$app" 2>&1 | grep -F 'TeamIdentifier=6N8KQ247WZ'

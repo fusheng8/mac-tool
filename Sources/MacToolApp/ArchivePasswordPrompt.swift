@@ -12,7 +12,7 @@ enum ArchivePasswordPrompt {
             NSApp.activate(ignoringOtherApps: true)
 
             let passwordField = MacSearchField()
-            passwordField.placeholder = "输入压缩包密码"
+            passwordField.placeholder = "输入密码（英文、数字或半角符号）"
             passwordField.showsSearchIcon = false
             passwordField.isSecure = true
             let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 32))

@@ -6,11 +6,13 @@ final class ContextMenuProgressWindowController: NSWindowController {
     private let detailLabel = NSTextField(wrappingLabelWithString: "")
     private let progressIndicator = NSProgressIndicator()
     private let closeButton = MacTextButton(title: "关闭")
+    private let cancelButton = MacTextButton(title: "取消")
     private let revealButton = MacTextButton(title: "在 Finder 中显示")
     private let openButton = MacTextButton(title: "打开文件夹")
     private let copyPathButton = MacTextButton(title: "复制路径")
     private var closeWorkItem: DispatchWorkItem?
     private var actionURL: URL?
+    private var cancellationHandler: (() -> Void)?
 
     init() {
         let window = NSWindow(
@@ -33,21 +35,31 @@ final class ContextMenuProgressWindowController: NSWindowController {
         fatalError("未实现 init(coder:)")
     }
 
-    func showRunning(title: String, detail: String) {
+    func showRunning(title: String, detail: String, onCancel: (() -> Void)? = nil) {
         closeWorkItem?.cancel()
         actionURL = nil
         updateIcon(symbolName: "archivebox", color: MacAssistantUI.Color.blue)
         titleLabel.stringValue = title
         detailLabel.stringValue = detail
         progressIndicator.isHidden = false
+        progressIndicator.isIndeterminate = true
         progressIndicator.startAnimation(nil)
         closeButton.isHidden = true
+        cancellationHandler = onCancel
+        cancelButton.isHidden = onCancel == nil
+        cancelButton.isEnabled = true
         setActionButtonsHidden(true)
         showCentered()
     }
 
-    func update(detail: String) {
+    func update(detail: String, fractionCompleted: Double? = nil) {
         detailLabel.stringValue = detail
+        if let fractionCompleted {
+            progressIndicator.isIndeterminate = false
+            progressIndicator.minValue = 0
+            progressIndicator.maxValue = 1
+            progressIndicator.doubleValue = min(1, max(0, fractionCompleted))
+        }
     }
 
     func showSuccess(detail: String, resultURL: URL? = nil, autoClose: Bool? = nil) {
@@ -59,6 +71,8 @@ final class ContextMenuProgressWindowController: NSWindowController {
         progressIndicator.stopAnimation(nil)
         progressIndicator.isHidden = true
         closeButton.isHidden = false
+        cancellationHandler = nil
+        cancelButton.isHidden = true
         setActionButtonsHidden(resultURL == nil)
         if autoClose ?? (resultURL == nil) {
             showCentered()
@@ -77,6 +91,8 @@ final class ContextMenuProgressWindowController: NSWindowController {
         progressIndicator.stopAnimation(nil)
         progressIndicator.isHidden = true
         closeButton.isHidden = false
+        cancellationHandler = nil
+        cancelButton.isHidden = true
         setActionButtonsHidden(true)
         showCentered()
         NSSound.beep()
@@ -118,6 +134,11 @@ final class ContextMenuProgressWindowController: NSWindowController {
         closeButton.isHidden = true
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelPressed)
+        cancelButton.isHidden = true
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
+
         for button in [revealButton, openButton, copyPathButton] {
             button.target = self
             button.isHidden = true
@@ -127,7 +148,7 @@ final class ContextMenuProgressWindowController: NSWindowController {
         openButton.action = #selector(openPressed)
         copyPathButton.action = #selector(copyPathPressed)
 
-        let actionStack = NSStackView(views: [revealButton, openButton, copyPathButton, closeButton])
+        let actionStack = NSStackView(views: [revealButton, openButton, copyPathButton, cancelButton, closeButton])
         actionStack.orientation = .horizontal
         actionStack.alignment = .centerY
         actionStack.spacing = 8
@@ -201,6 +222,13 @@ final class ContextMenuProgressWindowController: NSWindowController {
 
     @objc private func closePressed() {
         close()
+    }
+
+    @objc private func cancelPressed() {
+        guard let cancellationHandler else { return }
+        cancelButton.isEnabled = false
+        detailLabel.stringValue = "正在取消并清理临时文件..."
+        cancellationHandler()
     }
 
     @objc private func revealPressed() {

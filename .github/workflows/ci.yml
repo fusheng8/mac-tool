@@ -49,6 +49,10 @@ jobs:
           app='.build/Mac助手.app'
           test "$(lipo -archs "$app/Contents/MacOS/mac-tool")" = "arm64"
           test "$(lipo -archs "$app/Contents/PlugIns/mac-tool-finder-sync.appex/Contents/MacOS/mac-tool-finder-sync")" = "arm64"
+          test "$(lipo -archs "$app/Contents/Helpers/7zz")" = "arm64"
+          test -f "$app/Contents/Resources/ThirdPartyLicenses/7-Zip.txt"
+          "$app/Contents/Helpers/7zz" i >/dev/null
+          codesign --verify --strict "$app/Contents/Helpers/7zz"
           codesign --verify --deep --strict "$app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$(tr -d '[:space:]' < VERSION)"
           if rg -a -n '/Users/[^/]+/' "$app"; then

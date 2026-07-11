@@ -196,9 +196,6 @@ final class ProductSafetyTests: XCTestCase {
         XCTAssertEqual(PortEndpointParser.port(from: "[::1]:443"), 443)
         XCTAssertNil(PortEndpointParser.port(from: "localhost"))
         XCTAssertEqual(PortEndpointParser.inferredProtocol(from: "*:5353 UDP"), "UDP")
-        XCTAssertTrue(ArchiveRules.zipExtractionShouldFallback(message: "fchmod write error"))
-        XCTAssertFalse(ArchiveRules.zipExtractionShouldFallback(message: "unsupported format"))
-
         let cipher = ClipboardCipher(keyData: Data(repeating: 0x5A, count: 32))
         let plaintext = Data("private clipboard".utf8)
         let sealed = try cipher.seal(plaintext)

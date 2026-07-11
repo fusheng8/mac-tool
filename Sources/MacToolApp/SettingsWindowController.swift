@@ -3,6 +3,7 @@ import ApplicationServices
 import CoreGraphics
 import CoreServices
 import Foundation
+import MacToolCore
 import UniformTypeIdentifiers
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
@@ -2079,14 +2080,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func archiveDependencySummaryRow() -> NSView {
-        let tools = [
-            ("ZIP", ["zip", "unzip"]),
-            ("TAR", ["tar"]),
-            ("XZ", ["xz", "unxz"]),
-            ("7Z/RAR 读取", ["7zz", "7z"]),
-            ("RAR 写入", ["rar"])
-        ]
-
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
         row.widthAnchor.constraint(equalToConstant: Layout.rowWidth).isActive = true
@@ -2097,13 +2090,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let title = MacAssistantUI.title("命令行工具状态", size: 12, weight: .semibold)
+        let title = MacAssistantUI.title("归档引擎状态", size: 12, weight: .semibold)
         title.textColor = .secondaryLabelColor
         stack.addArrangedSubview(title)
 
-        for tool in tools {
-            stack.addArrangedSubview(archiveDependencyStatusLine(title: tool.0, names: tool.1))
-        }
+        stack.addArrangedSubview(archiveDependencyStatusLine(
+            title: "内置引擎",
+            executableURL: try? ArchiveToolLocator().sevenZipURL(),
+            missingDetail: "内置 7-Zip 组件缺失，请重新安装 Mac助手"
+        ))
+        stack.addArrangedSubview(archiveDependencyStatusLine(title: "RAR 写入", names: ["rar"]))
 
         row.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -2116,6 +2112,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func archiveDependencyStatusLine(title: String, names: [String]) -> NSView {
+        archiveDependencyStatusLine(
+            title: title,
+            executableURL: SystemCapabilities.firstAvailableTool(names),
+            missingDetail: "可选组件未安装；读取和解压不受影响"
+        )
+    }
+
+    private func archiveDependencyStatusLine(title: String, executableURL: URL?, missingDetail: String) -> NSView {
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
         row.widthAnchor.constraint(equalToConstant: Layout.rowWidth).isActive = true
@@ -2127,13 +2131,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.widthAnchor.constraint(equalToConstant: 84).isActive = true
 
-        let executableURL = SystemCapabilities.firstAvailableTool(names)
         let status = PermissionStatusPill(
             title: executableURL == nil ? "未找到" : "已安装",
             kind: executableURL == nil ? .needed : .granted
         )
 
-        let detailText = executableURL?.path ?? "搜索 /usr/bin、/bin、/usr/local/bin、/opt/homebrew/bin"
+        let detailText = executableURL?.path ?? missingDetail
         let detailLabel = MacAssistantUI.caption(detailText, size: 11)
         detailLabel.maximumNumberOfLines = 2
         detailLabel.textColor = .tertiaryLabelColor

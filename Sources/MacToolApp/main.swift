@@ -580,8 +580,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let archiveCancellation = itemID.isArchiveAction ? ArchiveCancellationToken() : nil
         if itemID.isArchiveAction {
-            showArchiveProgress(title: itemID.title, detail: "准备处理 \(max(urls.count, 1)) 项")
+            showArchiveProgress(
+                title: itemID.title,
+                detail: "准备处理 \(max(urls.count, 1)) 项",
+                cancellation: archiveCancellation
+            )
         }
         let resultURL = archiveResultLocation(itemID: itemID, urls: urls)
 
@@ -591,7 +596,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     DispatchQueue.main.async {
                         self?.updateArchiveProgress(progress)
                     }
-                }, archivePasswords: archivePasswords)
+                }, archivePasswords: archivePasswords, archiveCancellation: archiveCancellation)
                 try executor.perform(itemID: itemID, urls: urls)
                 AppLogger.shared.info("右键菜单动作执行成功：\(rawAction)")
                 DispatchQueue.main.async {
@@ -638,15 +643,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performCustomCompression(urls: [URL], options: ArchiveCompressionOptions) {
-        showArchiveProgress(title: "压缩", detail: "准备处理 \(max(urls.count, 1)) 项")
+        let cancellation = ArchiveCancellationToken()
+        showArchiveProgress(title: "压缩", detail: "准备处理 \(max(urls.count, 1)) 项", cancellation: cancellation)
         let resultURL = urls.first?.deletingLastPathComponent()
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let executor = ArchiveActionExecutor { [weak self] progress in
+                let executor = ArchiveActionExecutor(progressHandler: { [weak self] progress in
                     DispatchQueue.main.async {
                         self?.updateArchiveProgress(progress)
                     }
-                }
+                }, cancellation: cancellation)
                 try executor.compress(urls: urls, options: options)
                 DispatchQueue.main.async { [weak self] in
                     self?.showArchiveSuccess(title: "压缩", count: urls.count, resultURL: resultURL)
@@ -659,12 +665,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func showArchiveProgress(title: String, detail: String) {
+    private func showArchiveProgress(title: String, detail: String, cancellation: ArchiveCancellationToken?) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let controller = self.progressWindowController ?? ContextMenuProgressWindowController()
             self.progressWindowController = controller
-            controller.showRunning(title: title, detail: detail)
+            controller.showRunning(title: title, detail: detail, onCancel: cancellation.map { token in
+                { token.cancel() }
+            })
         }
     }
 
@@ -672,7 +680,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let detail = progress.total > 1
             ? "\(progress.message)（\(progress.current)/\(progress.total)）"
             : progress.message
-        progressWindowController?.update(detail: detail)
+        progressWindowController?.update(detail: detail, fractionCompleted: progress.fractionCompleted)
     }
 
     private func showArchiveSuccess(itemID: ContextMenuItemID, count: Int, resultURL: URL?) {

@@ -27,12 +27,4 @@ public enum ArchiveRules {
         当前搜索路径：\(toolSearchDirectories.joined(separator: ", "))
         """
     }
-
-    public static func zipExtractionShouldFallback(message: String) -> Bool {
-        let lowercased = message.lowercased()
-        return lowercased.contains("write error")
-            || lowercased.contains("continue? (y/n/^c)")
-            || lowercased.contains("fchmod")
-            || lowercased.contains("cannot set modif./access times")
-    }
 }
