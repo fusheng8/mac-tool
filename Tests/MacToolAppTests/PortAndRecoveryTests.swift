@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import XCTest
 @testable import MacToolApp
@@ -126,6 +127,41 @@ final class DisplayMatchingTests: XCTestCase {
 }
 
 final class DisplayDisconnectSafetyTests: XCTestCase {
+    func testManualDisplayRecoveryDoesNotRequireAutomationConsent() {
+        XCTAssertTrue(DisplayBackgroundWorkPolicy.shouldMonitor(
+            displayAutomationAllowed: false,
+            hasDesiredClose: true,
+            hasPendingReconnect: false,
+            hasAppDisconnectedDisplays: true
+        ))
+        XCTAssertFalse(DisplayBackgroundWorkPolicy.shouldApplyAutomation(
+            displayAutomationAllowed: false,
+            hasDesiredClose: true,
+            hasPendingReconnect: false
+        ))
+        XCTAssertFalse(DisplayBackgroundWorkPolicy.shouldMonitor(
+            displayAutomationAllowed: false,
+            hasDesiredClose: true,
+            hasPendingReconnect: false,
+            hasAppDisconnectedDisplays: false
+        ))
+    }
+
+    func testTopologyChangesAreNotSuppressedByRecentAppMutation() {
+        XCTAssertTrue(DisplayReconfigurationPolicy.shouldHandle(
+            flags: [.removeFlag],
+            shouldSuppressRecentMutation: true
+        ))
+        XCTAssertTrue(DisplayReconfigurationPolicy.shouldHandle(
+            flags: [.addFlag],
+            shouldSuppressRecentMutation: true
+        ))
+        XCTAssertFalse(DisplayReconfigurationPolicy.shouldHandle(
+            flags: [.disabledFlag],
+            shouldSuppressRecentMutation: true
+        ))
+    }
+
     func testManualBuiltInCloseUsesCurrentActiveDisplaysInsteadOfOtherDesiredProfiles() throws {
         let builtIn = display(id: 1, name: "内置显示屏", builtIn: true)
         let external = display(id: 3, name: "外接显示器", builtIn: false)
@@ -177,6 +213,29 @@ final class DisplayDisconnectSafetyTests: XCTestCase {
         controller.enforceDisplaySafety(store: store, reason: "test")
 
         XCTAssertTrue(backend.mutations.isEmpty)
+    }
+
+    func testSafetyGuardReopensBuiltInDisplayAfterExternalDisplayIsRemoved() throws {
+        let builtIn = display(id: 1, name: "内置显示屏", builtIn: true, active: false)
+        let detector = DisplayDetector(displayProvider: { [builtIn] })
+        let backend = RecordingDisplayBackend()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProfileStore(
+            configURL: root.appendingPathComponent("config.json"),
+            stateURL: root.appendingPathComponent("state.json"),
+            finderSyncConfigURL: nil
+        )
+        store.profiles = [profile(for: builtIn)]
+        try store.rememberAppDisconnectedDisplay(builtIn.runtimeDisplayID)
+        let controller = SoftDisconnectController(detector: detector, backend: backend, store: store)
+
+        controller.enforceDisplaySafety(store: store, reason: "external-removed")
+
+        XCTAssertEqual(backend.mutations.count, 1)
+        XCTAssertEqual(backend.mutations.first?.0, builtIn.runtimeDisplayID)
+        XCTAssertEqual(backend.mutations.first?.1, true)
     }
 
     private func display(id: UInt32, name: String, builtIn: Bool, active: Bool = true) -> DisplaySnapshot {

@@ -2,7 +2,7 @@
 
 Mac助手是一款面向 macOS 的轻量菜单栏效率工具。它把外接显示器控制、剪贴板历史、Finder 右键增强、压缩/解压和端口占用查看放在一个本机 App 里，适合经常连接外接显示器、处理压缩包、排查本地服务端口的 Mac 用户。
 
-当前稳定版本为 `0.2.5`，仅支持 Apple Silicon（arm64）和 macOS 13 Ventura 或更高版本。隐私、故障恢复和兼容性说明分别见 [PRIVACY.md](PRIVACY.md)、[docs/recovery.md](docs/recovery.md) 与 [docs/compatibility.md](docs/compatibility.md)。
+当前稳定版本为 `0.2.6`，仅支持 Apple Silicon（arm64）和 macOS 13 Ventura 或更高版本。隐私、故障恢复和兼容性说明分别见 [PRIVACY.md](PRIVACY.md)、[docs/recovery.md](docs/recovery.md) 与 [docs/compatibility.md](docs/compatibility.md)。
 
 底层项目名和主可执行文件名为 `mac-tool`，App 展示名为 `Mac助手`。
 
@@ -205,7 +205,7 @@ Finder 右键菜单依赖 Finder Sync 扩展。首次安装或更换 Bundle ID �
 ## 系统要求
 
 - macOS 13 Ventura 或更高版本。
-- Apple Silicon（arm64）；0.2.5 不提供 Intel 构建。
+- Apple Silicon（arm64）；0.2.6 不提供 Intel 构建。
 - Swift 6 toolchain / Xcode 16 或更高版本。
 - 非沙盒运行环境。项目使用显示相关私有符号和 Finder Sync 扩展，不适合上架 Mac App Store。
 - DDC/CI 功能依赖显示器、连接线和 macOS 当前暴露的底层能力；部分显示器可能不支持亮度、对比度或音量 VCP 码。
@@ -256,7 +256,7 @@ CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 生成位置类似：
 
 ```text
-.build/Mac助手-0.2.5.dmg
+.build/Mac助手-0.2.6.dmg
 ```
 
 版本号只从仓库根目录的 `VERSION` 读取，构建号取 Git 提交计数。DMG 始终包含指向 `/Applications` 的安装入口。发布工作流只响应与 `VERSION` 一致的版本标签或手动触发；PR 与 `main` 使用只读 CI 验证。
@@ -269,7 +269,7 @@ Mac助手使用 Sparkle 2 检查并安装后续更新。更新包仍通过 GitHu
 https://fusheng8.github.io/mac-tool/appcast.xml
 ```
 
-0.2.5 自动发布仍使用固定 Apple Development 身份和 Hardened Runtime；本地构建脚本已支持 Developer ID Application 与 Apple 公证，但不会自动改变 GitHub Release 门槛。安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
+0.2.6 自动发布仍使用固定 Apple Development 身份和 Hardened Runtime；本地构建脚本已支持 Developer ID Application 与 Apple 公证，但不会自动改变 GitHub Release 门槛。安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
 
 ```text
 SPARKLE_PRIVATE_KEY
@@ -290,8 +290,8 @@ CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" scripts/build_a
 ```bash
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" \
   DMG_NAME=MacTool.dmg scripts/build_dmg.sh
-gh release create 0.2.5 .build/MacTool.dmg \
-  --title 0.2.5 --generate-notes --verify-tag --draft
+gh release create 0.2.6 .build/MacTool.dmg \
+  --title 0.2.6 --generate-notes --verify-tag --draft
 ```
 
 版本标签触发后，GitHub Actions 会下载该预签名 DMG，重新验证磁盘镜像、arm64 架构、固定 Team Identifier、Hardened Runtime、Bundle/扩展签名、版本和路径，再使用仓库中已有的 `SPARKLE_PRIVATE_KEY` 生成 appcast。验证完成前 Release 保持草稿状态。

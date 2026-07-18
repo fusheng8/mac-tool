@@ -286,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statuses.onChange = { [weak self] in
             DispatchQueue.main.async {
+                self?.automation.updateBackgroundActivity()
                 self?.startDisplayRestoreWatchdogIfNeeded()
                 self?.menuBar.rebuildMenu()
             }
@@ -487,10 +488,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func hasDisplayBackgroundWork() -> Bool {
-        guard store.displayAutomationAllowed else { return false }
-        return store.profiles.contains {
+        let hasDesiredClose = store.profiles.contains {
             $0.enabled && $0.disconnect.enabled && $0.disconnect.allowSoftDisconnect
-        } || !store.pendingReconnects.isEmpty
+        }
+        return DisplayBackgroundWorkPolicy.shouldMonitor(
+            displayAutomationAllowed: store.displayAutomationAllowed,
+            hasDesiredClose: hasDesiredClose,
+            hasPendingReconnect: !store.pendingReconnects.isEmpty,
+            hasAppDisconnectedDisplays: !store.state.appDisconnectedDisplayIDs.isEmpty
+        )
     }
 
     private func showArchiveOpenError(_ error: Error) {
