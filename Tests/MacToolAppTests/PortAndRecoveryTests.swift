@@ -56,6 +56,36 @@ final class PortCommandRunnerTests: XCTestCase {
 }
 
 final class DisplayMatchingTests: XCTestCase {
+    func testActiveRuntimeAliasIsMergedIntoUniquePhysicalDisplay() {
+        let physical = display(id: 2, edid: "EDID-A", name: "Studio", serial: "0", active: false)
+        let alias = display(id: 33, edid: "", name: "外接显示器", serial: "0", active: true)
+
+        let reconciled = DisplayDetector.reconciledDisplays(
+            online: [physical],
+            active: [alias]
+        )
+
+        XCTAssertEqual(reconciled.count, 1)
+        XCTAssertEqual(reconciled[0].runtimeDisplayID, physical.runtimeDisplayID)
+        XCTAssertTrue(reconciled[0].isActive)
+        XCTAssertEqual(reconciled[0].edidUUID, physical.edidUUID)
+    }
+
+    func testActiveRuntimeAliasIsNotMergedWhenHardwareIdentityIsAmbiguous() {
+        let first = display(id: 2, edid: "EDID-A", name: "Studio A", serial: "0", active: false)
+        let second = display(id: 3, edid: "EDID-B", name: "Studio B", serial: "0", active: false)
+        let alias = display(id: 33, edid: "", name: "外接显示器", serial: "0", active: true)
+
+        let reconciled = DisplayDetector.reconciledDisplays(
+            online: [first, second],
+            active: [alias]
+        )
+
+        XCTAssertEqual(reconciled.count, 3)
+        XCTAssertFalse(reconciled[0].isActive)
+        XCTAssertFalse(reconciled[1].isActive)
+    }
+
     func testStrictModeDoesNotFallBackToNameAfterEDIDMismatch() {
         let detector = DisplayDetector()
         let candidate = display(id: 1, edid: "EDID-B", name: "Same Model", serial: "200")
@@ -87,7 +117,13 @@ final class DisplayMatchingTests: XCTestCase {
         XCTAssertNil(detector.findDisplay(for: ambiguous))
     }
 
-    private func display(id: UInt32, edid: String, name: String, serial: String) -> DisplaySnapshot {
+    private func display(
+        id: UInt32,
+        edid: String,
+        name: String,
+        serial: String,
+        active: Bool = true
+    ) -> DisplaySnapshot {
         DisplaySnapshot(
             runtimeDisplayID: id,
             displayName: name,
@@ -98,7 +134,7 @@ final class DisplayMatchingTests: XCTestCase {
             manufacturer: "Test",
             alphanumericSerial: "",
             isBuiltIn: false,
-            isActive: true,
+            isActive: active,
             ioLocation: ""
         )
     }
@@ -127,6 +163,33 @@ final class DisplayMatchingTests: XCTestCase {
 }
 
 final class DisplayDisconnectSafetyTests: XCTestCase {
+    func testReconnectTreatsAnAlreadyActiveLiveDisplayAsSuccess() throws {
+        let staleBuiltIn = display(id: 1, name: "内置显示屏", builtIn: true, active: false)
+        var liveBuiltIn = staleBuiltIn
+        liveBuiltIn.runtimeDisplayID = 9
+        liveBuiltIn.isActive = true
+        let detector = DisplayDetector(displayProvider: { [liveBuiltIn] })
+        let backend = RecordingDisplayBackend()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProfileStore(
+            configURL: root.appendingPathComponent("config.json"),
+            stateURL: root.appendingPathComponent("state.json"),
+            finderSyncConfigURL: nil
+        )
+        try store.rememberAppDisconnectedDisplay(staleBuiltIn.runtimeDisplayID)
+        let controller = SoftDisconnectController(detector: detector, backend: backend, store: store)
+
+        try controller.reconnect(
+            profile: profile(for: staleBuiltIn),
+            fallbackDisplay: staleBuiltIn
+        )
+
+        XCTAssertTrue(backend.mutations.isEmpty)
+        XCTAssertTrue(store.state.appDisconnectedDisplayIDs.isEmpty)
+    }
+
     func testManualDisplayRecoveryDoesNotRequireAutomationConsent() {
         XCTAssertTrue(DisplayBackgroundWorkPolicy.shouldMonitor(
             displayAutomationAllowed: false,

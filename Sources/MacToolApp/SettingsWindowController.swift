@@ -528,10 +528,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func refreshDisplays() {
+        let previouslySelectedDisplay = scannedDisplays.indices.contains(selectedDisplayIndex)
+            ? scannedDisplays[selectedDisplayIndex]
+            : nil
         let liveDisplays = detector.onlineDisplays()
         store.rememberDisplays(liveDisplays)
         scannedDisplays = mergedDisplayList(liveDisplays: liveDisplays)
-        selectedDisplayIndex = min(selectedDisplayIndex, max(0, scannedDisplays.count - 1))
+        if let previouslySelectedDisplay,
+           let updatedIndex = scannedDisplays.firstIndex(where: {
+               $0.hasSameStableIdentity(as: previouslySelectedDisplay)
+           }) {
+            selectedDisplayIndex = updatedIndex
+        } else {
+            selectedDisplayIndex = min(selectedDisplayIndex, max(0, scannedDisplays.count - 1))
+        }
         rebuildDisplayTabs()
         reloadCurrentPage()
     }
