@@ -15,18 +15,16 @@ final class DisplayDetector {
         }
         var buffer = Array(repeating: DCLDisplayInfo(), count: Int(DCL_MAX_DISPLAYS))
         let count = DCLCopyOnlineDisplays(&buffer, Int32(buffer.count))
-        var displays = count > 0 ? buffer.prefix(Int(count)).map(Self.snapshot) : []
+        let displays = count > 0 ? buffer.prefix(Int(count)).map(Self.snapshot) : []
 
-        for activeDisplay in activeDisplaySnapshots() where !displays.contains(where: { sameDisplay($0, activeDisplay) }) {
-            displays.append(activeDisplay)
-        }
-
-        return displays.filter { !$0.isVirtualPlaceholder }.sorted { lhs, rhs in
-            if lhs.isBuiltIn != rhs.isBuiltIn {
-                return !lhs.isBuiltIn
+        return Self.reconciledDisplays(online: displays, active: activeDisplaySnapshots())
+            .filter { !$0.isVirtualPlaceholder }
+            .sorted { lhs, rhs in
+                if lhs.isBuiltIn != rhs.isBuiltIn {
+                    return !lhs.isBuiltIn
+                }
+                return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
             }
-            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
-        }
     }
 
     func activeDisplayCount() -> Int {
@@ -130,8 +128,56 @@ final class DisplayDetector {
         }
     }
 
-    private func sameDisplay(_ lhs: DisplaySnapshot, _ rhs: DisplaySnapshot) -> Bool {
-        lhs.hasSameStableIdentity(as: rhs)
+    static func reconciledDisplays(
+        online: [DisplaySnapshot],
+        active: [DisplaySnapshot]
+    ) -> [DisplaySnapshot] {
+        var displays = online
+        for activeDisplay in active {
+            if let index = matchingOnlineDisplayIndex(for: activeDisplay, in: displays) {
+                // WindowServer can expose a drawable alias with a different
+                // runtime ID after a hot-plug or mirroring transition. Keep the
+                // physical online display (it carries the stable identity used
+                // by profiles), but take the active state from the alias.
+                displays[index].isActive = true
+            } else {
+                displays.append(activeDisplay)
+            }
+        }
+        return displays
+    }
+
+    private static func matchingOnlineDisplayIndex(
+        for activeDisplay: DisplaySnapshot,
+        in displays: [DisplaySnapshot]
+    ) -> Int? {
+        if let exact = displays.firstIndex(where: {
+            $0.runtimeDisplayID != 0 && $0.runtimeDisplayID == activeDisplay.runtimeDisplayID
+        }) {
+            return exact
+        }
+
+        let stableMatches = displays.indices.filter {
+            displays[$0].hasSameStableIdentity(as: activeDisplay)
+        }
+        if stableMatches.count == 1 {
+            return stableMatches[0]
+        }
+
+        // Active-list aliases often omit EDID, serial number and I/O location.
+        // Vendor + model + built-in type is safe only when it identifies one
+        // online display unambiguously.
+        guard let activeVendor = DisplaySnapshot.normalizedIdentity(activeDisplay.vendorId),
+              let activeModel = DisplaySnapshot.normalizedIdentity(activeDisplay.modelId) else {
+            return nil
+        }
+        let hardwareMatches = displays.indices.filter { index in
+            let candidate = displays[index]
+            return candidate.isBuiltIn == activeDisplay.isBuiltIn
+                && DisplaySnapshot.normalizedIdentity(candidate.vendorId) == activeVendor
+                && DisplaySnapshot.normalizedIdentity(candidate.modelId) == activeModel
+        }
+        return hardwareMatches.count == 1 ? hardwareMatches[0] : nil
     }
 
     private static func normalizedName(name: String, isBuiltIn: Bool) -> String {

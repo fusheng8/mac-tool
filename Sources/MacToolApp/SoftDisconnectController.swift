@@ -145,27 +145,63 @@ final class SoftDisconnectController {
     func restoreDefaultDisplayState(store: ProfileStore, reason: String) {
         let ids = store.state.appDisconnectedDisplayIDs
         guard !ids.isEmpty else { return }
+        let liveDisplays = detector.onlineDisplays()
         for displayID in ids {
+            let rememberedDisplay = store.lastSeenDisplays.first { $0.runtimeDisplayID == displayID }
+            let liveDisplay = liveDisplays.first { $0.runtimeDisplayID == displayID }
+                ?? rememberedDisplay.flatMap { remembered in
+                    let matches = liveDisplays.filter { $0.hasSameStableIdentity(as: remembered) }
+                    return matches.count == 1 ? matches[0] : nil
+                }
+            if liveDisplay?.isActive == true {
+                forgetDisconnectedOwnership(
+                    displayIDs: [displayID, liveDisplay?.runtimeDisplayID],
+                    explicitStore: store
+                )
+                AppLogger.shared.info(
+                    "显示器 \(liveDisplay?.displayName ?? String(displayID)) 已处于打开状态，"
+                        + "无需重复恢复，触发来源：\(reason)。"
+                )
+                continue
+            }
+            let currentDisplayID = liveDisplay?.runtimeDisplayID ?? displayID
             do {
-                try backend.setDisplayEnabled(displayID, enabled: true)
+                try backend.setDisplayEnabled(currentDisplayID, enabled: true)
                 noteBackendMutation()
-                try? store.forgetAppDisconnectedDisplay(displayID)
-                AppLogger.shared.info("已恢复本应用断开的显示器 \(displayID)，触发来源：\(reason)。")
+                forgetDisconnectedOwnership(
+                    displayIDs: [displayID, currentDisplayID],
+                    explicitStore: store
+                )
+                AppLogger.shared.info("已恢复本应用断开的显示器 \(currentDisplayID)，触发来源：\(reason)。")
             } catch {
-                AppLogger.shared.error("恢复本应用断开的显示器 \(displayID) 失败，触发来源：\(reason)：\(error.localizedDescription)")
+                AppLogger.shared.error(
+                    "恢复本应用断开的显示器 \(currentDisplayID) 失败，"
+                        + "触发来源：\(reason)：\(error.localizedDescription)"
+                )
             }
         }
     }
 
     func reconnect(profile: DisplayProfile, fallbackDisplay: DisplaySnapshot? = nil) throws {
-        guard let display = fallbackDisplay ?? detector.findDisplay(for: profile) else {
+        let liveDisplay = detector.findDisplay(for: profile)
+        guard let display = liveDisplay ?? fallbackDisplay else {
             throw SoftDisconnectError.noMatchingDisplay
         }
         guard display.runtimeDisplayID != 0 else {
             throw SoftDisconnectError.missingRuntimeDisplayID
         }
+        if liveDisplay?.isActive == true {
+            forgetDisconnectedOwnership(displayIDs: [
+                liveDisplay?.runtimeDisplayID,
+                fallbackDisplay?.runtimeDisplayID
+            ])
+            return
+        }
         try setDisplay(display, enabled: true, verificationProfile: profile)
-        try? store?.forgetAppDisconnectedDisplay(display.runtimeDisplayID)
+        forgetDisconnectedOwnership(displayIDs: [
+            display.runtimeDisplayID,
+            fallbackDisplay?.runtimeDisplayID
+        ])
     }
 
     func isDisconnected(profile: DisplayProfile) -> Bool {
@@ -248,6 +284,9 @@ final class SoftDisconnectController {
         }
 
         for display in displays {
+            if display.isActive {
+                continue
+            }
             do {
                 try backend.setDisplayEnabled(display.runtimeDisplayID, enabled: true)
                 noteBackendMutation()
@@ -306,6 +345,16 @@ final class SoftDisconnectController {
         stateLock.lock()
         lastBackendMutationAt = Date()
         stateLock.unlock()
+    }
+
+    private func forgetDisconnectedOwnership(
+        displayIDs: [UInt32?],
+        explicitStore: ProfileStore? = nil
+    ) {
+        let targetStore = explicitStore ?? store
+        for displayID in Set(displayIDs.compactMap { $0 }.filter { $0 != 0 }) {
+            try? targetStore?.forgetAppDisconnectedDisplay(displayID)
+        }
     }
 
     private func isCircuitOpen(profileID: String, now: Date = Date()) -> Bool {
