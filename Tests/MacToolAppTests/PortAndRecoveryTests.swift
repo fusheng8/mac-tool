@@ -86,6 +86,29 @@ final class DisplayMatchingTests: XCTestCase {
         XCTAssertFalse(reconciled[1].isActive)
     }
 
+    func testSafetyReconciliationDropsOrphanActiveAliasAfterPhysicalDisplayRemoval() {
+        let builtIn = display(id: 1, edid: "BUILT-IN", name: "内置显示屏", serial: "1", active: false)
+        var removedExternalAlias = display(
+            id: 49,
+            edid: "",
+            name: "外接显示器",
+            serial: "0",
+            active: true
+        )
+        removedExternalAlias.vendorId = "0xabcd"
+        removedExternalAlias.modelId = "0xef01"
+
+        let reconciled = DisplayDetector.reconciledDisplays(
+            online: [builtIn],
+            active: [removedExternalAlias],
+            includeUnmatchedActiveAliases: false
+        )
+
+        XCTAssertEqual(reconciled.count, 1)
+        XCTAssertEqual(reconciled[0].runtimeDisplayID, builtIn.runtimeDisplayID)
+        XCTAssertFalse(reconciled[0].isActive)
+    }
+
     func testStrictModeDoesNotFallBackToNameAfterEDIDMismatch() {
         let detector = DisplayDetector()
         let candidate = display(id: 1, edid: "EDID-B", name: "Same Model", serial: "200")
@@ -223,6 +246,8 @@ final class DisplayDisconnectSafetyTests: XCTestCase {
             flags: [.disabledFlag],
             shouldSuppressRecentMutation: true
         ))
+        XCTAssertTrue(DisplayReconfigurationPolicy.requiresSettledSafetyCheck(flags: [.removeFlag]))
+        XCTAssertFalse(DisplayReconfigurationPolicy.requiresSettledSafetyCheck(flags: [.addFlag]))
     }
 
     func testManualBuiltInCloseUsesCurrentActiveDisplaysInsteadOfOtherDesiredProfiles() throws {
@@ -298,6 +323,32 @@ final class DisplayDisconnectSafetyTests: XCTestCase {
 
         XCTAssertEqual(backend.mutations.count, 1)
         XCTAssertEqual(backend.mutations.first?.0, builtIn.runtimeDisplayID)
+        XCTAssertEqual(backend.mutations.first?.1, true)
+    }
+
+    func testSafetyGuardDoesNotTrustRememberedActiveStateForOwnedDisplay() throws {
+        let rememberedBuiltIn = display(id: 1, name: "内置显示屏", builtIn: true, active: true)
+        let detector = DisplayDetector(
+            displayProvider: { [] },
+            safetyDisplayProvider: { [] }
+        )
+        let backend = RecordingDisplayBackend()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProfileStore(
+            configURL: root.appendingPathComponent("config.json"),
+            stateURL: root.appendingPathComponent("state.json"),
+            finderSyncConfigURL: nil
+        )
+        store.rememberDisplays([rememberedBuiltIn])
+        try store.rememberAppDisconnectedDisplay(rememberedBuiltIn.runtimeDisplayID)
+        let controller = SoftDisconnectController(detector: detector, backend: backend, store: store)
+
+        controller.enforceDisplaySafety(store: store, reason: "external-removed")
+
+        XCTAssertEqual(backend.mutations.count, 1)
+        XCTAssertEqual(backend.mutations.first?.0, rememberedBuiltIn.runtimeDisplayID)
         XCTAssertEqual(backend.mutations.first?.1, true)
     }
 

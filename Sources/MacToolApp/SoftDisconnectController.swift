@@ -267,7 +267,7 @@ final class SoftDisconnectController {
     }
 
     private func displaySafetyNeedsForcedOpen(profiles _: [DisplayProfile]) -> Bool {
-        !detector.onlineDisplays().contains(where: \.isActive)
+        !detector.safetyDisplays().contains(where: \.isActive)
     }
 
     private func forceAllDisplaysOpen(store: ProfileStore, reason: String) {
@@ -276,7 +276,12 @@ final class SoftDisconnectController {
     }
 
     private func enableKnownDisplays(store: ProfileStore, reason: String) {
-        let displays = uniqueDisplays(detector.onlineDisplays() + store.lastSeenDisplays)
+        let liveDisplays = detector.onlineDisplays()
+        let ownedDisplayIDs = store.state.appDisconnectedDisplayIDs
+        let rememberedOwnedDisplays = store.lastSeenDisplays.filter {
+            ownedDisplayIDs.contains($0.runtimeDisplayID)
+        }
+        let displays = uniqueDisplays(liveDisplays + rememberedOwnedDisplays)
             .filter { $0.runtimeDisplayID != 0 && !$0.isVirtualPlaceholder }
         guard !displays.isEmpty else {
             AppLogger.shared.error("无法强制打开显示器，触发来源：\(reason)：系统当前没有返回可用显示器。")
@@ -284,7 +289,11 @@ final class SoftDisconnectController {
         }
 
         for display in displays {
-            if display.isActive {
+            let isOwnedRecoveryTarget = rememberedOwnedDisplays.contains {
+                $0.runtimeDisplayID == display.runtimeDisplayID
+                    || $0.hasSameStableIdentity(as: display)
+            }
+            if display.isActive && !isOwnedRecoveryTarget {
                 continue
             }
             do {

@@ -4,20 +4,47 @@ import Foundation
 
 final class DisplayDetector {
     private let displayProvider: (() -> [DisplaySnapshot])?
+    private let safetyDisplayProvider: (() -> [DisplaySnapshot])?
 
-    init(displayProvider: (() -> [DisplaySnapshot])? = nil) {
+    init(
+        displayProvider: (() -> [DisplaySnapshot])? = nil,
+        safetyDisplayProvider: (() -> [DisplaySnapshot])? = nil
+    ) {
         self.displayProvider = displayProvider
+        self.safetyDisplayProvider = safetyDisplayProvider
     }
 
     func onlineDisplays() -> [DisplaySnapshot] {
         if let displayProvider {
             return displayProvider()
         }
+        return systemDisplays(includeUnmatchedActiveAliases: true)
+    }
+
+    /// Returns only active aliases that can be reconciled to a currently online
+    /// physical display. WindowServer may briefly keep a removed display in the
+    /// active list after hot-unplug; such an orphan must not block black-screen
+    /// recovery.
+    func safetyDisplays() -> [DisplaySnapshot] {
+        if let safetyDisplayProvider {
+            return safetyDisplayProvider()
+        }
+        if let displayProvider {
+            return displayProvider()
+        }
+        return systemDisplays(includeUnmatchedActiveAliases: false)
+    }
+
+    private func systemDisplays(includeUnmatchedActiveAliases: Bool) -> [DisplaySnapshot] {
         var buffer = Array(repeating: DCLDisplayInfo(), count: Int(DCL_MAX_DISPLAYS))
         let count = DCLCopyOnlineDisplays(&buffer, Int32(buffer.count))
         let displays = count > 0 ? buffer.prefix(Int(count)).map(Self.snapshot) : []
 
-        return Self.reconciledDisplays(online: displays, active: activeDisplaySnapshots())
+        return Self.reconciledDisplays(
+            online: displays,
+            active: activeDisplaySnapshots(),
+            includeUnmatchedActiveAliases: includeUnmatchedActiveAliases
+        )
             .filter { !$0.isVirtualPlaceholder }
             .sorted { lhs, rhs in
                 if lhs.isBuiltIn != rhs.isBuiltIn {
@@ -130,7 +157,8 @@ final class DisplayDetector {
 
     static func reconciledDisplays(
         online: [DisplaySnapshot],
-        active: [DisplaySnapshot]
+        active: [DisplaySnapshot],
+        includeUnmatchedActiveAliases: Bool = true
     ) -> [DisplaySnapshot] {
         var displays = online
         for activeDisplay in active {
@@ -140,7 +168,7 @@ final class DisplayDetector {
                 // physical online display (it carries the stable identity used
                 // by profiles), but take the active state from the alias.
                 displays[index].isActive = true
-            } else {
+            } else if includeUnmatchedActiveAliases {
                 displays.append(activeDisplay)
             }
         }
