@@ -269,7 +269,17 @@ Mac助手使用 Sparkle 2 检查并安装后续更新。更新包仍通过 GitHu
 https://fusheng8.github.io/mac-tool/appcast.xml
 ```
 
-0.2.9 自动发布仍使用固定 Apple Development 身份和 Hardened Runtime；本地构建脚本已支持 Developer ID Application 与 Apple 公证，但不会自动改变 GitHub Release 门槛。安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。发布前需要把本机导出的 Sparkle 私钥配置到仓库 Secret：
+自动发布使用固定代码签名身份和 Hardened Runtime。签名身份从密码保护的 PKCS#12 文件导入 GitHub runner 的临时钥匙串，构建验证完成后立即删除。仓库需要配置以下 Actions Secrets：
+
+```text
+MACOS_CERTIFICATE_P12_BASE64
+MACOS_CERTIFICATE_PASSWORD
+MACOS_CODESIGN_IDENTITY
+```
+
+其中 `MACOS_CERTIFICATE_P12_BASE64` 是只包含签名证书和对应私钥的 `.p12` 文件经 Base64 编码后的内容；`MACOS_CODESIGN_IDENTITY` 是 `security find-identity -v -p codesigning` 返回的完整身份名称。不要把 `.p12`、编码内容或密码提交到仓库。
+
+安装后的版本更新由 Sparkle 使用 EdDSA 签名校验。还需要把 Sparkle 私钥配置到仓库 Secret：
 
 ```text
 SPARKLE_PRIVATE_KEY
@@ -285,7 +295,7 @@ CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build_app.sh
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" scripts/build_app.sh
 ```
 
-推荐让 Apple 代码签名私钥始终留在本机钥匙串：先在本机生成正式签名 DMG，再把它上传到对应版本的草稿 Release：
+如果 GitHub Actions 签名身份暂时不可用，可以让 Apple 代码签名私钥留在本机钥匙串，先在本机生成正式签名 DMG，再把它上传到对应版本的草稿 Release：
 
 ```bash
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" \
