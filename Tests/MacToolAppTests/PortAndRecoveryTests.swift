@@ -109,6 +109,33 @@ final class DisplayMatchingTests: XCTestCase {
         XCTAssertFalse(reconciled[0].isActive)
     }
 
+    func testHistoryReconciliationRemovesWeakAliasForUniquePhysicalDisplay() {
+        let physical = display(id: 2, edid: "EDID-A", name: "DM73u pro", serial: "0", active: false)
+        let alias = display(id: 49, edid: "", name: "外接显示器", serial: "0", active: true)
+
+        let reconciliation = DisplayIdentityReconciler.reconcile([physical, alias])
+
+        XCTAssertEqual(reconciliation.displays.count, 1)
+        XCTAssertEqual(reconciliation.displays[0].runtimeDisplayID, physical.runtimeDisplayID)
+        XCTAssertTrue(reconciliation.displays[0].isActive)
+        XCTAssertEqual(reconciliation.removedAliases.map(\.runtimeDisplayID), [alias.runtimeDisplayID])
+        XCTAssertEqual(
+            reconciliation.canonicalDisplayByAliasRuntimeID[alias.runtimeDisplayID]?.runtimeDisplayID,
+            physical.runtimeDisplayID
+        )
+    }
+
+    func testHistoryReconciliationPreservesWeakAliasWhenPhysicalMatchIsAmbiguous() {
+        let first = display(id: 2, edid: "EDID-A", name: "Studio A", serial: "0")
+        let second = display(id: 3, edid: "EDID-B", name: "Studio B", serial: "0")
+        let alias = display(id: 49, edid: "", name: "外接显示器", serial: "0")
+
+        let reconciliation = DisplayIdentityReconciler.reconcile([first, second, alias])
+
+        XCTAssertEqual(reconciliation.displays.count, 3)
+        XCTAssertTrue(reconciliation.removedAliases.isEmpty)
+    }
+
     func testStrictModeDoesNotFallBackToNameAfterEDIDMismatch() {
         let detector = DisplayDetector()
         let candidate = display(id: 1, edid: "EDID-B", name: "Same Model", serial: "200")
@@ -213,21 +240,27 @@ final class DisplayDisconnectSafetyTests: XCTestCase {
         XCTAssertTrue(store.state.appDisconnectedDisplayIDs.isEmpty)
     }
 
-    func testManualDisplayRecoveryDoesNotRequireAutomationConsent() {
+    func testPersistedDesiredCloseDoesNotRequireAutomationConsent() {
         XCTAssertTrue(DisplayBackgroundWorkPolicy.shouldMonitor(
             displayAutomationAllowed: false,
             hasDesiredClose: true,
             hasPendingReconnect: false,
             hasAppDisconnectedDisplays: true
         ))
-        XCTAssertFalse(DisplayBackgroundWorkPolicy.shouldApplyAutomation(
+        XCTAssertTrue(DisplayBackgroundWorkPolicy.shouldApplyAutomation(
             displayAutomationAllowed: false,
             hasDesiredClose: true,
             hasPendingReconnect: false
         ))
-        XCTAssertFalse(DisplayBackgroundWorkPolicy.shouldMonitor(
+        XCTAssertTrue(DisplayBackgroundWorkPolicy.shouldMonitor(
             displayAutomationAllowed: false,
             hasDesiredClose: true,
+            hasPendingReconnect: false,
+            hasAppDisconnectedDisplays: false
+        ))
+        XCTAssertFalse(DisplayBackgroundWorkPolicy.shouldMonitor(
+            displayAutomationAllowed: false,
+            hasDesiredClose: false,
             hasPendingReconnect: false,
             hasAppDisconnectedDisplays: false
         ))
@@ -352,6 +385,229 @@ final class DisplayDisconnectSafetyTests: XCTestCase {
         XCTAssertEqual(backend.mutations.first?.1, true)
     }
 
+    func testSafetyOverrideKeepsDesiredCloseAndReappliesItAfterExternalReturns() throws {
+        var builtIn = display(id: 1, name: "内置显示屏", builtIn: true, active: false)
+        let external = display(id: 3, name: "外接显示器", builtIn: false, active: true)
+        let environment = MutableDisplayEnvironment(displays: [builtIn, external])
+        let detector = DisplayDetector(
+            displayProvider: { environment.snapshot() },
+            safetyDisplayProvider: { environment.snapshot() }
+        )
+        let backend = MutatingDisplayBackend(environment: environment)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProfileStore(
+            configURL: root.appendingPathComponent("config.json"),
+            stateURL: root.appendingPathComponent("state.json"),
+            finderSyncConfigURL: nil
+        )
+        let desiredClosedProfile = profile(for: builtIn)
+        store.profiles = [desiredClosedProfile]
+        store.rememberDisplays([builtIn, external])
+        try store.rememberAppDisconnectedDisplay(builtIn.runtimeDisplayID)
+        let controller = SoftDisconnectController(detector: detector, backend: backend, store: store)
+
+        environment.replaceDisplays([builtIn])
+        controller.enforceDisplaySafety(store: store, reason: "external-removed")
+
+        XCTAssertTrue(environment.display(id: builtIn.runtimeDisplayID)?.isActive == true)
+        XCTAssertTrue(controller.desiredCloseEnabled(profile: store.profiles[0]))
+        XCTAssertEqual(store.state.appDisconnectedDisplayIDs, [builtIn.runtimeDisplayID])
+
+        builtIn.isActive = true
+        environment.replaceDisplays([builtIn, external])
+        controller.applyDesiredDisplayStates(store: store, reason: "external-returned")
+
+        XCTAssertTrue(environment.display(id: builtIn.runtimeDisplayID)?.isActive == false)
+        XCTAssertTrue(controller.desiredCloseEnabled(profile: store.profiles[0]))
+        XCTAssertEqual(backend.mutations.map(\.1), [true, false])
+    }
+
+    func testDesiredCloseIsReappliedOnLaunchWithoutDisplayAutomationConsent() throws {
+        let builtIn = display(id: 1, name: "内置显示屏", builtIn: true, active: true)
+        let external = display(id: 3, name: "外接显示器", builtIn: false, active: true)
+        let environment = MutableDisplayEnvironment(displays: [builtIn, external])
+        let detector = DisplayDetector(displayProvider: { environment.snapshot() })
+        let backend = MutatingDisplayBackend(environment: environment)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configURL = root.appendingPathComponent("config.json")
+        let stateURL = root.appendingPathComponent("state.json")
+        var store: ProfileStore? = ProfileStore(
+            configURL: configURL,
+            stateURL: stateURL,
+            finderSyncConfigURL: nil
+        )
+        store?.profiles = [profile(for: builtIn)]
+        try store?.completeOnboarding(clipboardEnabled: false, displayAutomationApproved: false)
+        store = nil
+
+        let reloadedStore = ProfileStore(
+            configURL: configURL,
+            stateURL: stateURL,
+            finderSyncConfigURL: nil
+        )
+        XCTAssertFalse(reloadedStore.displayAutomationAllowed)
+        let controller = SoftDisconnectController(detector: detector, backend: backend, store: reloadedStore)
+
+        controller.applyDesiredDisplayStates(store: reloadedStore, reason: "app-start")
+
+        XCTAssertTrue(environment.display(id: builtIn.runtimeDisplayID)?.isActive == false)
+        XCTAssertTrue(reloadedStore.lastSeenDisplays.first {
+            $0.runtimeDisplayID == builtIn.runtimeDisplayID
+        }?.isActive == false)
+        XCTAssertEqual(backend.mutations.map(\.1), [false])
+    }
+
+    func testSchemaFiveMigrationRemovesPersistedDisplayAlias() throws {
+        var physical = display(id: 2, name: "DM73u pro", builtIn: false, active: true)
+        physical.vendorId = "0x4c23"
+        physical.modelId = "0x2765"
+        physical.serialNumber = "0"
+        physical.alphanumericSerial = "0000000000000"
+        physical.ioLocation = "physical-display-path"
+
+        var alias = physical
+        alias.runtimeDisplayID = 49
+        alias.displayName = "外接显示器"
+        alias.edidUUID = ""
+        alias.alphanumericSerial = ""
+        alias.ioLocation = ""
+
+        let physicalProfile = profile(for: physical)
+        var aliasProfile = profile(for: alias)
+        aliasProfile.id = "display-外接显示器-external"
+        aliasProfile.enabled = false
+        aliasProfile.disconnect = DisconnectConfig(
+            enabled: false,
+            allowSoftDisconnect: false,
+            autoReconnect: false,
+            autoReconnectDelaySeconds: 30,
+            externalOnly: false,
+            confirmBeforeDisconnect: true
+        )
+        let legacyConfig = AppConfig(
+            schemaVersion: 4,
+            profiles: [physicalProfile, aliasProfile],
+            clipboard: .defaultValue,
+            archive: .defaultValue,
+            contextMenu: .defaultValue
+        )
+        let legacyState = AppState(
+            pendingReconnects: [PendingReconnect(
+                profileId: physicalProfile.id,
+                displaySnapshot: alias,
+                reason: "legacy-alias",
+                autoReconnect: true
+            )],
+            lastSeenDisplays: [physical, alias],
+            onboardingVersion: ProfileStore.onboardingVersion,
+            privacyNoticeVersion: ProfileStore.privacyNoticeVersion,
+            appDisconnectedDisplayIDs: [alias.runtimeDisplayID]
+        )
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configURL = root.appendingPathComponent("config.json")
+        let stateURL = root.appendingPathComponent("state.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(legacyConfig).write(to: configURL)
+        try encoder.encode(legacyState).write(to: stateURL)
+
+        let store = ProfileStore(configURL: configURL, stateURL: stateURL, finderSyncConfigURL: nil)
+
+        XCTAssertEqual(store.config.schemaVersion, 5)
+        XCTAssertEqual(store.lastSeenDisplays.map(\.runtimeDisplayID), [physical.runtimeDisplayID])
+        XCTAssertEqual(store.state.appDisconnectedDisplayIDs, [physical.runtimeDisplayID])
+        XCTAssertEqual(store.pendingReconnects.first?.displaySnapshot.runtimeDisplayID, physical.runtimeDisplayID)
+        XCTAssertEqual(store.profiles.map(\.id), [physicalProfile.id])
+    }
+
+    func testSchemaFiveMigrationKeepsTheOwnedDesiredCloseWhenLegacyProfilesConflict() throws {
+        let builtIn = display(id: 1, name: "内置显示屏", builtIn: true, active: false)
+        let external = display(id: 2, name: "DM73u pro", builtIn: false, active: true)
+        let builtInProfile = profile(for: builtIn)
+        let externalProfile = profile(for: external)
+        let legacyConfig = AppConfig(
+            schemaVersion: 4,
+            profiles: [externalProfile, builtInProfile],
+            clipboard: .defaultValue,
+            archive: .defaultValue,
+            contextMenu: .defaultValue
+        )
+        let legacyState = AppState(
+            pendingReconnects: [],
+            lastSeenDisplays: [builtIn, external],
+            onboardingVersion: ProfileStore.onboardingVersion,
+            privacyNoticeVersion: ProfileStore.privacyNoticeVersion,
+            appDisconnectedDisplayIDs: [builtIn.runtimeDisplayID]
+        )
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configURL = root.appendingPathComponent("config.json")
+        let stateURL = root.appendingPathComponent("state.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(legacyConfig).write(to: configURL)
+        try encoder.encode(legacyState).write(to: stateURL)
+
+        let store = ProfileStore(configURL: configURL, stateURL: stateURL, finderSyncConfigURL: nil)
+        let migratedBuiltIn = try XCTUnwrap(store.profiles.first { $0.id == builtInProfile.id })
+        let migratedExternal = try XCTUnwrap(store.profiles.first { $0.id == externalProfile.id })
+        let controller = SoftDisconnectController(
+            detector: DisplayDetector(displayProvider: { [builtIn, external] }),
+            backend: AvailableDisplayBackend()
+        )
+
+        XCTAssertTrue(controller.desiredCloseEnabled(profile: migratedBuiltIn))
+        XCTAssertFalse(controller.desiredCloseEnabled(profile: migratedExternal))
+    }
+
+    func testSchemaFiveMigrationUsesLastClosedDisplayAfterCleanShutdownClearsOwnership() throws {
+        let builtIn = display(id: 1, name: "内置显示屏", builtIn: true, active: false)
+        let external = display(id: 2, name: "DM73u pro", builtIn: false, active: true)
+        let builtInProfile = profile(for: builtIn)
+        let externalProfile = profile(for: external)
+        let legacyConfig = AppConfig(
+            schemaVersion: 4,
+            profiles: [externalProfile, builtInProfile],
+            clipboard: .defaultValue,
+            archive: .defaultValue,
+            contextMenu: .defaultValue
+        )
+        let legacyState = AppState(
+            pendingReconnects: [],
+            lastSeenDisplays: [builtIn, external],
+            onboardingVersion: ProfileStore.onboardingVersion,
+            privacyNoticeVersion: ProfileStore.privacyNoticeVersion,
+            appDisconnectedDisplayIDs: []
+        )
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configURL = root.appendingPathComponent("config.json")
+        let stateURL = root.appendingPathComponent("state.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(legacyConfig).write(to: configURL)
+        try encoder.encode(legacyState).write(to: stateURL)
+
+        let store = ProfileStore(configURL: configURL, stateURL: stateURL, finderSyncConfigURL: nil)
+        let migratedBuiltIn = try XCTUnwrap(store.profiles.first { $0.id == builtInProfile.id })
+        let migratedExternal = try XCTUnwrap(store.profiles.first { $0.id == externalProfile.id })
+        let controller = SoftDisconnectController(
+            detector: DisplayDetector(displayProvider: { [builtIn, external] }),
+            backend: AvailableDisplayBackend()
+        )
+
+        XCTAssertTrue(controller.desiredCloseEnabled(profile: migratedBuiltIn))
+        XCTAssertFalse(controller.desiredCloseEnabled(profile: migratedExternal))
+    }
+
     private func display(id: UInt32, name: String, builtIn: Bool, active: Bool = true) -> DisplaySnapshot {
         DisplaySnapshot(
             runtimeDisplayID: id,
@@ -422,6 +678,66 @@ private final class RecordingDisplayBackend: DisplayBackend, @unchecked Sendable
         lock.lock()
         recordedMutations.append((displayID, enabled))
         lock.unlock()
+    }
+}
+
+private final class MutableDisplayEnvironment: @unchecked Sendable {
+    private let lock = NSLock()
+    private var displays: [DisplaySnapshot]
+
+    init(displays: [DisplaySnapshot]) {
+        self.displays = displays
+    }
+
+    func snapshot() -> [DisplaySnapshot] {
+        lock.lock()
+        defer { lock.unlock() }
+        return displays
+    }
+
+    func replaceDisplays(_ displays: [DisplaySnapshot]) {
+        lock.lock()
+        self.displays = displays
+        lock.unlock()
+    }
+
+    func setDisplay(id: UInt32, enabled: Bool) {
+        lock.lock()
+        if let index = displays.firstIndex(where: { $0.runtimeDisplayID == id }) {
+            displays[index].isActive = enabled
+        }
+        lock.unlock()
+    }
+
+    func display(id: UInt32) -> DisplaySnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return displays.first { $0.runtimeDisplayID == id }
+    }
+}
+
+private final class MutatingDisplayBackend: DisplayBackend, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedMutations: [(UInt32, Bool)] = []
+    private let environment: MutableDisplayEnvironment
+    let isAvailable = true
+    let unavailableReason: String? = nil
+
+    init(environment: MutableDisplayEnvironment) {
+        self.environment = environment
+    }
+
+    var mutations: [(UInt32, Bool)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedMutations
+    }
+
+    func setDisplayEnabled(_ displayID: UInt32, enabled: Bool) throws {
+        lock.lock()
+        recordedMutations.append((displayID, enabled))
+        lock.unlock()
+        environment.setDisplay(id: displayID, enabled: enabled)
     }
 }
 

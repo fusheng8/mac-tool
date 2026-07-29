@@ -72,6 +72,29 @@ struct DisplaySnapshot: Codable, Hashable {
         return "\(vendor)|\(model)|\(serial)"
     }
 
+    var hasStrongPhysicalIdentity: Bool {
+        Self.normalizedIdentity(edidUUID) != nil
+            || Self.normalizedIdentity(alphanumericSerial) != nil
+            || Self.normalizedIdentity(serialNumber) != nil
+            || Self.normalizedIdentity(ioLocation) != nil
+    }
+
+    var isWeakRuntimeAlias: Bool {
+        !hasStrongPhysicalIdentity
+            && Self.normalizedIdentity(vendorId) != nil
+            && Self.normalizedIdentity(modelId) != nil
+    }
+
+    func hasSameHardwareModel(as other: DisplaySnapshot) -> Bool {
+        guard let vendor = Self.normalizedIdentity(vendorId),
+              let model = Self.normalizedIdentity(modelId) else {
+            return false
+        }
+        return isBuiltIn == other.isBuiltIn
+            && Self.normalizedIdentity(other.vendorId) == vendor
+            && Self.normalizedIdentity(other.modelId) == model
+    }
+
     static func normalizedIdentity(_ value: String) -> String? {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else { return nil }
@@ -138,6 +161,48 @@ struct DisplaySnapshot: Codable, Hashable {
     }
 }
 
+struct DisplayIdentityReconciliation {
+    var displays: [DisplaySnapshot]
+    var removedAliases: [DisplaySnapshot]
+    var canonicalDisplayByAliasRuntimeID: [UInt32: DisplaySnapshot]
+}
+
+enum DisplayIdentityReconciler {
+    static func reconcile(_ displays: [DisplaySnapshot]) -> DisplayIdentityReconciliation {
+        var canonicalDisplays = displays
+        var removedIndices = Set<Int>()
+        var removedAliases: [DisplaySnapshot] = []
+        var canonicalByAliasID: [UInt32: DisplaySnapshot] = [:]
+
+        for (aliasIndex, alias) in displays.enumerated() where alias.isWeakRuntimeAlias {
+            let matches = displays.indices.filter { candidateIndex in
+                candidateIndex != aliasIndex
+                    && displays[candidateIndex].hasStrongPhysicalIdentity
+                    && displays[candidateIndex].hasSameHardwareModel(as: alias)
+            }
+            guard matches.count == 1, let canonicalIndex = matches.first else {
+                continue
+            }
+
+            canonicalDisplays[canonicalIndex].isActive =
+                canonicalDisplays[canonicalIndex].isActive || alias.isActive
+            removedIndices.insert(aliasIndex)
+            removedAliases.append(alias)
+            if alias.runtimeDisplayID != 0 {
+                canonicalByAliasID[alias.runtimeDisplayID] = canonicalDisplays[canonicalIndex]
+            }
+        }
+
+        return DisplayIdentityReconciliation(
+            displays: canonicalDisplays.indices.compactMap { index in
+                removedIndices.contains(index) ? nil : canonicalDisplays[index]
+            },
+            removedAliases: removedAliases,
+            canonicalDisplayByAliasRuntimeID: canonicalByAliasID
+        )
+    }
+}
+
 struct DisplayMatchRule: Codable, Hashable {
     var displayName: String
     var edidUUID: String
@@ -148,6 +213,15 @@ struct DisplayMatchRule: Codable, Hashable {
     var alphanumericSerial: String
     var ioLocation: String
     var matchThreshold: Int
+
+    var vendorModelSerialIdentity: String? {
+        guard let vendor = DisplaySnapshot.normalizedIdentity(vendorId),
+              let model = DisplaySnapshot.normalizedIdentity(modelId),
+              let serial = DisplaySnapshot.normalizedIdentity(serialNumber) else {
+            return nil
+        }
+        return "\(vendor)|\(model)|\(serial)"
+    }
 
     static func normalizedThreshold(_ value: Int) -> Int {
         min(100, max(1, value))
@@ -1162,7 +1236,7 @@ struct ClipboardHistoryItem: Codable, Hashable, Identifiable {
 }
 
 struct AppConfig: Codable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
     var schemaVersion: Int
     var profiles: [DisplayProfile]

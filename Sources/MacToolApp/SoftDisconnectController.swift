@@ -105,7 +105,9 @@ final class SoftDisconnectController {
         beforeDisconnect(display)
         try setDisplay(display, enabled: false, verificationProfile: profile)
         try? store?.rememberAppDisconnectedDisplay(display.runtimeDisplayID)
-        return display
+        var disconnectedDisplay = display
+        disconnectedDisplay.isActive = false
+        return disconnectedDisplay
     }
 
     func enforceDisplaySafety(store: ProfileStore, reason: String) {
@@ -121,10 +123,6 @@ final class SoftDisconnectController {
     }
 
     func applyDesiredDisplayStates(store: ProfileStore, reason: String) {
-        guard store.displayAutomationAllowed else {
-            AppLogger.shared.info("显示器自动化尚未获得隐私与安全确认，已跳过：\(reason)。")
-            return
-        }
         guard backend.isAvailable else {
             AppLogger.shared.error("显示器软断开不可用：\(backend.unavailableReason ?? "未知原因")")
             return
@@ -241,7 +239,9 @@ final class SoftDisconnectController {
             do {
                 try setDisplay(display, enabled: false, verificationProfile: profile)
                 try? store.rememberAppDisconnectedDisplay(display.runtimeDisplayID)
-                store.rememberDisplays([display])
+                var disconnectedDisplay = display
+                disconnectedDisplay.isActive = false
+                store.rememberDisplays([disconnectedDisplay])
                 AppLogger.shared.info("\(profile.name) 已按用户设置关闭，触发来源：\(reason)。")
             } catch {
                 openCircuit(profileID: profile.id)

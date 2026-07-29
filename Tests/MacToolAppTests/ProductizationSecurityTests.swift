@@ -376,7 +376,7 @@ final class ProductSafetyTests: XCTestCase {
 
         let store = ProfileStore(configURL: configURL, stateURL: stateURL, finderSyncConfigURL: nil)
 
-        XCTAssertEqual(store.config.schemaVersion, 4)
+        XCTAssertEqual(store.config.schemaVersion, 5)
         XCTAssertFalse(store.profiles[0].disconnect.autoReconnect)
         XCTAssertTrue(store.pendingReconnects.isEmpty)
         XCTAssertTrue(store.displayAutomationAllowed)

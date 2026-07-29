@@ -69,7 +69,7 @@ final class ControlCenterStatusTests: XCTestCase {
 }
 
 final class ControlCenterConfigurationMigrationTests: XCTestCase {
-    func testV2ConfigurationNormalizesToV4() throws {
+    func testV2ConfigurationNormalizesToCurrentSchema() throws {
         let legacy = AppConfig(
             schemaVersion: 2,
             profiles: [],
@@ -82,7 +82,7 @@ final class ControlCenterConfigurationMigrationTests: XCTestCase {
         let migrated = decoded.normalized()
 
         XCTAssertEqual(decoded.schemaVersion, 2)
-        XCTAssertEqual(migrated.schemaVersion, 4)
+        XCTAssertEqual(migrated.schemaVersion, 5)
         XCTAssertEqual(migrated.contextMenu.items.map(\.id), ContextMenuConfig.defaultValue.items.map(\.id))
     }
 
@@ -124,7 +124,7 @@ final class ControlCenterConfigurationMigrationTests: XCTestCase {
 
         let migrated = legacy.normalized()
 
-        XCTAssertEqual(migrated.schemaVersion, 4)
+        XCTAssertEqual(migrated.schemaVersion, 5)
         XCTAssertFalse(migrated.profiles[0].disconnect.autoReconnect)
     }
 
