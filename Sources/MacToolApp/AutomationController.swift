@@ -8,7 +8,11 @@ enum DisplayBackgroundWorkPolicy {
         hasDesiredClose: Bool,
         hasPendingReconnect: Bool
     ) -> Bool {
-        displayAutomationAllowed && (hasDesiredClose || hasPendingReconnect)
+        // A close switch is an explicit, persisted display intent. Reapplying
+        // it after launch or hot-plug does not depend on the separate optional
+        // background-automation consent. Legacy timed reconnect work keeps its
+        // existing consent requirement.
+        hasDesiredClose || (displayAutomationAllowed && hasPendingReconnect)
     }
 
     static func shouldMonitor(
@@ -131,7 +135,7 @@ final class AutomationController {
         queue.async { [weak self] in
             guard let self else { return }
             guard self.hasBackgroundDisplayWork() else { return }
-            if self.shouldApplyApprovedAutomation() {
+            if self.shouldApplyConfiguredDisplayIntent() {
                 self.disconnect.applyDesiredDisplayStates(store: self.store, reason: localized)
             } else if self.hasSafetyRecoveryWork() {
                 // Restoring a display closed by this app is a safety guarantee of
@@ -215,7 +219,7 @@ final class AutomationController {
         store.profiles.contains { disconnect.desiredCloseEnabled(profile: $0) }
     }
 
-    private func shouldApplyApprovedAutomation() -> Bool {
+    private func shouldApplyConfiguredDisplayIntent() -> Bool {
         DisplayBackgroundWorkPolicy.shouldApplyAutomation(
             displayAutomationAllowed: store.displayAutomationAllowed,
             hasDesiredClose: hasDesiredClose,

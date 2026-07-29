@@ -88,12 +88,34 @@ final class ProfileStore: @unchecked Sendable {
         if requiresPersistentDisplayCloseMigration {
             storedState.pendingReconnects.removeAll()
         }
+        let removedDisplayAliases = Self.reconcileDisplayAliases(in: &storedState)
+        let reconciledLegacyDesiredCloseConflict: Bool
+        if loadedConfig.schemaVersion < 5 {
+            reconciledLegacyDesiredCloseConflict = Self.reconcileLegacyDesiredCloseConflict(
+                in: &storedConfig,
+                state: storedState
+            )
+        } else {
+            reconciledLegacyDesiredCloseConflict = false
+        }
+        let profileCountBeforeAliasCleanup = storedConfig.profiles.count
+        storedConfig.profiles.removeAll {
+            Self.isInactiveGeneratedAliasProfile($0, matching: removedDisplayAliases)
+        }
+        let removedInactiveAliasProfiles = storedConfig.profiles.count != profileCountBeforeAliasCleanup
 
         do {
-            if !isExistingInstallation || requiresConfigMigration || recoveryNotice != nil {
+            if !isExistingInstallation
+                || requiresConfigMigration
+                || reconciledLegacyDesiredCloseConflict
+                || removedInactiveAliasProfiles
+                || recoveryNotice != nil {
                 try saveConfig()
             }
-            if !FileManager.default.fileExists(atPath: stateURL.path) || requiresConfigMigration || recoveryNotice != nil {
+            if !FileManager.default.fileExists(atPath: stateURL.path)
+                || requiresConfigMigration
+                || !removedDisplayAliases.isEmpty
+                || recoveryNotice != nil {
                 try saveState()
             }
         } catch {
@@ -235,6 +257,7 @@ final class ProfileStore: @unchecked Sendable {
                     state.lastSeenDisplays.append(display)
                 }
             }
+            Self.reconcileDisplayAliases(in: &state)
         }
     }
 
@@ -437,6 +460,148 @@ final class ProfileStore: @unchecked Sendable {
         } catch {
             return nil
         }
+    }
+
+    @discardableResult
+    private static func reconcileDisplayAliases(in state: inout AppState) -> [DisplaySnapshot] {
+        let reconciliation = DisplayIdentityReconciler.reconcile(state.lastSeenDisplays)
+        guard !reconciliation.removedAliases.isEmpty else {
+            return []
+        }
+
+        state.lastSeenDisplays = reconciliation.displays
+        var seenDisplayIDs = Set<UInt32>()
+        state.appDisconnectedDisplayIDs = state.appDisconnectedDisplayIDs.compactMap { displayID in
+            let canonicalID = reconciliation.canonicalDisplayByAliasRuntimeID[displayID]?.runtimeDisplayID
+                ?? displayID
+            return seenDisplayIDs.insert(canonicalID).inserted ? canonicalID : nil
+        }
+        for index in state.pendingReconnects.indices {
+            let snapshot = state.pendingReconnects[index].displaySnapshot
+            guard var canonical = reconciliation.canonicalDisplayByAliasRuntimeID[snapshot.runtimeDisplayID] else {
+                continue
+            }
+            canonical.isActive = snapshot.isActive
+            state.pendingReconnects[index].displaySnapshot = canonical
+        }
+        return reconciliation.removedAliases
+    }
+
+    private static func isInactiveGeneratedAliasProfile(
+        _ profile: DisplayProfile,
+        matching aliases: [DisplaySnapshot]
+    ) -> Bool {
+        guard profile.id.hasPrefix("display-"),
+              !profile.enabled,
+              !profile.disconnect.enabled,
+              !profile.disconnect.allowSoftDisconnect,
+              !profile.colorLock.enabled,
+              !profile.automationEnabled,
+              DisplaySnapshot.normalizedIdentity(profile.match.edidUUID) == nil,
+              DisplaySnapshot.normalizedIdentity(profile.match.alphanumericSerial) == nil,
+              DisplaySnapshot.normalizedIdentity(profile.match.serialNumber) == nil,
+              DisplaySnapshot.normalizedIdentity(profile.match.ioLocation) == nil else {
+            return false
+        }
+
+        return aliases.contains { alias in
+            alias.isWeakRuntimeAlias
+                && DisplaySnapshot.normalizedIdentity(profile.match.vendorId)
+                    == DisplaySnapshot.normalizedIdentity(alias.vendorId)
+                && DisplaySnapshot.normalizedIdentity(profile.match.modelId)
+                    == DisplaySnapshot.normalizedIdentity(alias.modelId)
+                && DisplaySnapshot.normalizedIdentity(profile.match.displayName)
+                    == DisplaySnapshot.normalizedIdentity(alias.displayName)
+        }
+    }
+
+    private static func reconcileLegacyDesiredCloseConflict(
+        in config: inout AppConfig,
+        state: AppState
+    ) -> Bool {
+        let desiredProfileIndices = config.profiles.indices.filter {
+            let profile = config.profiles[$0]
+            return DisplaySafetyPolicy.isAutomationEligible(
+                profileEnabled: profile.enabled,
+                disconnectEnabled: profile.disconnect.enabled,
+                allowSoftDisconnect: profile.disconnect.allowSoftDisconnect
+            )
+        }
+        guard desiredProfileIndices.count > 1 else {
+            return false
+        }
+
+        let ownedDisplays = state.lastSeenDisplays.filter {
+            state.appDisconnectedDisplayIDs.contains($0.runtimeDisplayID)
+        }
+        let ownedProfileIndices = desiredProfileIndices.filter { profileIndex in
+            ownedDisplays.contains {
+                strictProfile(config.profiles[profileIndex], matches: $0)
+            }
+        }
+        let intendedProfileIndices: [Int]
+        if !ownedProfileIndices.isEmpty {
+            intendedProfileIndices = ownedProfileIndices
+        } else {
+            // A clean shutdown opens displays owned by the app and clears the
+            // ownership list, but the last-seen snapshot still records which
+            // display had actually been closed. Use it only to resolve legacy
+            // profiles that otherwise claim every display should be closed.
+            let inactiveDisplays = state.lastSeenDisplays.filter { !$0.isActive }
+            intendedProfileIndices = desiredProfileIndices.filter { profileIndex in
+                inactiveDisplays.contains {
+                    strictProfile(config.profiles[profileIndex], matches: $0)
+                }
+            }
+        }
+        guard !intendedProfileIndices.isEmpty,
+              intendedProfileIndices.count < desiredProfileIndices.count else {
+            return false
+        }
+
+        var changed = false
+        for profileIndex in desiredProfileIndices where !intendedProfileIndices.contains(profileIndex) {
+            config.profiles[profileIndex].disconnect.enabled = false
+            config.profiles[profileIndex].disconnect.allowSoftDisconnect = false
+            if !config.profiles[profileIndex].colorLock.enabled
+                && !config.profiles[profileIndex].automationEnabled {
+                config.profiles[profileIndex].enabled = false
+            }
+            changed = true
+        }
+        return changed
+    }
+
+    private static func strictProfile(_ profile: DisplayProfile, matches display: DisplaySnapshot) -> Bool {
+        guard profile.matchMode == .strict else {
+            return false
+        }
+        let candidates: [(String?, String?)] = [
+            (
+                DisplaySnapshot.normalizedIdentity(profile.match.edidUUID),
+                DisplaySnapshot.normalizedIdentity(display.edidUUID)
+            ),
+            (
+                DisplaySnapshot.normalizedIdentity(profile.match.alphanumericSerial),
+                DisplaySnapshot.normalizedIdentity(display.alphanumericSerial)
+            ),
+            (
+                profile.match.vendorModelSerialIdentity,
+                display.vendorModelSerialIdentity
+            ),
+            (
+                DisplaySnapshot.normalizedIdentity(profile.match.ioLocation),
+                DisplaySnapshot.normalizedIdentity(display.ioLocation)
+            ),
+            (
+                DisplaySnapshot.normalizedIdentity(profile.match.displayName),
+                DisplaySnapshot.normalizedIdentity(display.displayName)
+            )
+        ]
+        for (expected, actual) in candidates where expected != nil {
+            return expected == actual
+        }
+        return false
     }
 }
 

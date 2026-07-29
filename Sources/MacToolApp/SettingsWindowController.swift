@@ -566,7 +566,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             display.isActive = false
             displays.append(display)
         }
-        return displays.sorted { lhs, rhs in
+        return DisplayIdentityReconciler.reconcile(displays).displays.sorted { lhs, rhs in
             if lhs.isActive != rhs.isActive {
                 return lhs.isActive
             }
@@ -945,7 +945,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func settingsSection(display: DisplaySnapshot) -> NSView {
         var rows: [NSView] = [
-            switchRow(title: "关闭此显示器", detail: "开关显示当前实际关闭状态；安全兜底时会临时保持打开。", control: closeDisplaySwitch),
+            switchRow(
+                title: "关闭此显示器",
+                detail: "保存期望开关状态；安全兜底临时打开后，会在其他显示器可用时自动恢复。",
+                control: closeDisplaySwitch
+            ),
             switchRow(
                 title: "只允许关闭外接显示器",
                 detail: "关闭后可操作 MacBook 内置显示屏；仍会确保至少保留一台可用显示器。",
@@ -2311,7 +2315,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func loadControls(profile: DisplayProfile, display: DisplaySnapshot) {
-        closeDisplaySwitch.state = display.isActive ? .off : .on
+        closeDisplaySwitch.state = disconnect.desiredCloseEnabled(profile: profile) ? .on : .off
         closeDisplaySwitch.isEnabled = display.runtimeDisplayID != 0 && disconnect.backendAvailability.available
         if let reason = disconnect.backendAvailability.reason, !disconnect.backendAvailability.available {
             closeDisplaySwitch.setAccessibilityHelp(reason)
