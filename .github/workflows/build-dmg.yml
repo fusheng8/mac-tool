@@ -47,12 +47,12 @@ jobs:
         id: dmg_source
         env:
           GH_TOKEN: ${{ github.token }}
-          MACOS_KEYCHAIN_BASE64: ${{ secrets.MACOS_KEYCHAIN_BASE64 }}
-          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
-          if [[ -n "$MACOS_KEYCHAIN_BASE64" && -n "$MACOS_KEYCHAIN_PASSWORD" ]]; then
+          if [[ -n "$MACOS_CERTIFICATE_P12_BASE64" && -n "$MACOS_CERTIFICATE_PASSWORD" ]]; then
             echo "mode=build" >> "$GITHUB_OUTPUT"
-            echo "A signing keychain is configured; building the DMG on the runner."
+            echo "A signing identity is configured; building the DMG on the runner."
           elif [[ "$GITHUB_REF_TYPE" == "tag" ]] && gh release view "$APP_VERSION" >/dev/null 2>&1; then
             mkdir -p "$PWD/.build"
             gh release download "$APP_VERSION" \
@@ -70,32 +70,45 @@ jobs:
       - name: Install signing keychain
         if: steps.dmg_source.outputs.mode == 'build'
         env:
-          MACOS_KEYCHAIN_BASE64: ${{ secrets.MACOS_KEYCHAIN_BASE64 }}
-          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
         run: |
-          if [[ -z "$MACOS_KEYCHAIN_BASE64" ]]; then
-            echo "Missing MACOS_KEYCHAIN_BASE64; formal DMG builds never fall back to ad-hoc signing." >&2
+          if [[ -z "$MACOS_CERTIFICATE_P12_BASE64" ]]; then
+            echo "Missing MACOS_CERTIFICATE_P12_BASE64; formal DMG builds never fall back to ad-hoc signing." >&2
             exit 1
           fi
 
-          if [[ -z "$MACOS_KEYCHAIN_PASSWORD" ]]; then
-            echo "Missing MACOS_KEYCHAIN_PASSWORD repository secret" >&2
+          if [[ -z "$MACOS_CERTIFICATE_PASSWORD" ]]; then
+            echo "Missing MACOS_CERTIFICATE_PASSWORD repository secret" >&2
             exit 1
           fi
 
-          keychain_path="$RUNNER_TEMP/fusheng.keychain"
-          printf '%s' "$MACOS_KEYCHAIN_BASE64" | base64 --decode > "$keychain_path"
-          chmod 600 "$keychain_path"
+          certificate_path="$RUNNER_TEMP/fusheng-signing.p12"
+          keychain_path="$RUNNER_TEMP/fusheng-signing.keychain-db"
+          keychain_password="$(uuidgen)$(uuidgen)"
 
-          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain_path"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          chmod 600 "$certificate_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
           security list-keychains -d user -s "$keychain_path"
           security default-keychain -d user -s "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+          rm -f "$certificate_path"
 
           if [[ -z "$MACOS_CODESIGN_IDENTITY" ]]; then
-            MACOS_CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain_path" | awk -F '"' '/"Apple Development:/ { print $2; exit }')"
+            MACOS_CODESIGN_IDENTITY="$(
+              security find-identity -v -p codesigning "$keychain_path" \
+                | awk -F '"' '/"(Apple Development|Developer ID Application):/ { print $2; exit }'
+            )"
           fi
 
           if [[ -z "$MACOS_CODESIGN_IDENTITY" ]]; then
@@ -104,6 +117,7 @@ jobs:
           fi
 
           echo "CODESIGN_IDENTITY=$MACOS_CODESIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
           echo "Using code signing identity: $MACOS_CODESIGN_IDENTITY"
 
       - name: Build DMG
@@ -133,6 +147,15 @@ jobs:
           if grep -aR -n -E '/Users/[^/]+/' "$app"; then
             echo "Packaged app contains a user-specific absolute path" >&2
             exit 1
+          fi
+
+      - name: Remove signing keychain
+        if: always() && steps.dmg_source.outputs.mode == 'build'
+        run: |
+          rm -f "$RUNNER_TEMP/fusheng-signing.p12"
+          signing_keychain_path="${SIGNING_KEYCHAIN_PATH:-$RUNNER_TEMP/fusheng-signing.keychain-db}"
+          if [[ -f "$signing_keychain_path" ]]; then
+            security delete-keychain "$signing_keychain_path"
           fi
 
       - name: Resolve Sparkle tools for prebuilt DMG
