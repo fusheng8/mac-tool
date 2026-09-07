@@ -182,7 +182,8 @@ final class ContextMenuActionExecutor {
         var components = URLComponents()
         components.scheme = "warp"
         components.host = "action"
-        components.path = "/new_window"
+        // Reuse Warp's existing window instead of adding a second window on every open.
+        components.path = "/new_tab"
         components.queryItems = [URLQueryItem(name: "path", value: try targetDirectory(from: urls).path)]
         guard let url = components.url, NSWorkspace.shared.open(url) else {
             throw ContextMenuActionError.applicationNotFound(ExternalApp.warp.displayName)
