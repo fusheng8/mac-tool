@@ -214,6 +214,20 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
         searchField.onKeyCommand = { [weak self] event in
             self?.handleKeyDown(event) ?? false
         }
+        searchField.onCompositionChange = { [weak self] isComposing in
+            guard let self else { return }
+            if isComposing {
+                // Carbon hot keys otherwise swallow candidate-selection keys before AppKit.
+                self.unregisterPanelHotKeys()
+            } else {
+                // Finish delivering the commit key before restoring panel hot keys.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.window?.isVisible == true,
+                          !self.searchField.hasMarkedText() else { return }
+                    self.registerPanelHotKeys()
+                }
+            }
+        }
         header.addSubview(searchField)
 
         clearButton.tintColor = .secondaryLabelColor
@@ -922,6 +936,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
 
     private func registerPanelHotKeys() {
         unregisterPanelHotKeys()
+        guard !searchField.hasMarkedText() else { return }
         installPanelHotKeyHandlerIfNeeded()
 
         var nextID: UInt32 = 1
@@ -1024,12 +1039,14 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private func handlePanelHotKey(_ hotKeyID: EventHotKeyID) -> Bool {
         guard hotKeyID.signature == panelHotKeySignature,
               window?.isVisible == true,
+              !searchField.hasMarkedText(),
               let action = panelHotKeyActions[hotKeyID.id] else {
             return false
         }
 
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.window?.isVisible == true else { return }
+            guard let self, self.window?.isVisible == true,
+                  !self.searchField.hasMarkedText() else { return }
             switch action {
             case .shortcut(let shortcut):
                 _ = self.handleShortcutAction(shortcut)
@@ -1160,6 +1177,8 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
+        // Let the original event reach the input method without invoking panel actions.
+        guard !searchField.hasMarkedText() else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if event.keyCode == 53 {
             window?.orderOut(nil)
@@ -2052,6 +2071,7 @@ final class ClipboardHistoryWindowController: NSWindowController, QLPreviewPanel
     private func installQuickLookKeyMonitor() {
         guard quickLookKeyMonitor == nil else { return }
         quickLookKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard self?.searchField.hasMarkedText() != true else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if event.keyCode == 49,
                flags.isEmpty,

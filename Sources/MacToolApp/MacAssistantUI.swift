@@ -547,8 +547,15 @@ final class MacSearchField: NSControl, NSTextInputClient {
 
     var onChange: ((String) -> Void)?
     var onKeyCommand: ((NSEvent) -> Bool)?
+    var onCompositionChange: ((Bool) -> Void)?
     private var isFocused = false
-    private var markedText = ""
+    private var markedText = "" {
+        didSet {
+            if oldValue.isEmpty != markedText.isEmpty {
+                onCompositionChange?(!markedText.isEmpty)
+            }
+        }
+    }
     private var markedSelectedRange = NSRange(location: 0, length: 0)
     private var showsCaret = false
     private var caretTimer: Timer?

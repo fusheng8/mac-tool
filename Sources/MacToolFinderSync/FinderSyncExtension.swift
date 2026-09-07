@@ -838,7 +838,8 @@ private final class FinderContextMenuActionExecutor {
         var components = URLComponents()
         components.scheme = "warp"
         components.host = "action"
-        components.path = "/new_window"
+        // Keep the fallback executor consistent with the main app's window reuse behavior.
+        components.path = "/new_tab"
         components.queryItems = [URLQueryItem(name: "path", value: try targetDirectory(from: urls).path)]
         guard let url = components.url, NSWorkspace.shared.open(url) else {
             throw FinderContextMenuActionError.applicationNotFound(FinderExternalApp.warp.displayName)
