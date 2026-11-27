@@ -13,8 +13,7 @@ This skill is intentionally project-local. Do not copy or install it under
 - `main` is protected. Do not force-push or expect direct pushes to `main` to
   work. Changes must go through a PR with required checks.
 - `.github/workflows/ci.yml` runs `Swift Build`.
-- `.github/workflows/build-dmg.yml` runs on PRs, pushes to `main`, manual
-  dispatch, and tags matching `[0-9]*.[0-9]*.[0-9]*`.
+- `.github/workflows/build-dmg.yml` runs on manual dispatch and tags matching `[0-9]*.[0-9]*.[0-9]*`.
 - A version tag such as `0.1.16` is the release trigger. Tag pushes build the
   DMG, upload `MacTool.dmg` to GitHub Release, generate Sparkle appcast, and
   deploy the appcast to GitHub Pages.
@@ -34,7 +33,10 @@ This skill is intentionally project-local. Do not copy or install it under
    - Expected remote: `git@github.com:fusheng8/mac-tool.git`.
 3. Sync tags and remote state.
    - Run `git fetch origin --tags --prune`.
-   - Determine the next patch tag from `git tag --sort=-v:refname`.
+   - Determine the next unused patch tag from `git tag --sort=-v:refname`.
+   - Include the exact release version in the root `VERSION` file and add its
+     release notes to `CHANGELOG.md` in the release PR. The DMG workflow checks
+     the tag against `VERSION` before building.
 4. Run tests before opening or merging a release PR.
    - Use:
      `env CLANG_MODULE_CACHE_PATH=.build/module-cache swift test`
@@ -69,8 +71,16 @@ After the PR is merged:
    `gh pr view <number> --json state,mergedAt,mergeCommit,url,headRefName,baseRefName`
 2. Fetch remote state:
    `git fetch origin --tags --prune`
-3. Create the next patch tag on `origin/main`, not on a stale local commit:
-   `git tag <next-version> origin/main`
+3. Confirm the merged commit contains the intended release and create the tag
+   only if its version matches. Set `release_version` to the planned patch tag,
+   then run the guarded command:
+
+   ```bash
+   test "$(git show origin/main:VERSION | tr -d '[:space:]')" = "$release_version" &&
+     git tag "$release_version" origin/main
+   ```
+
+   If the check fails, correct the version through a PR before tagging.
 4. Push the tag:
    `git push origin <next-version>`
 5. Find the tag workflow:
