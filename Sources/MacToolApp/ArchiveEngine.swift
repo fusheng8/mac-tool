@@ -266,7 +266,7 @@ final class ArchiveEngine {
         let format = try detectedFormat(for: url)
         return try withPreparedArchive(url, format: format) { preparedURL in
             var arguments = ["l", "-slt", "-ba", "-sccUTF-8"]
-            appendPassword(password, to: &arguments)
+            appendReadPassword(password, to: &arguments)
             arguments.append(preparedURL.path)
             let result = try runSevenZip(arguments)
             try validate(result)
@@ -295,7 +295,7 @@ final class ArchiveEngine {
         let format = try detectedFormat(for: url)
         try withPreparedArchive(url, format: format) { preparedURL in
             var arguments = ["t", "-y", "-sccUTF-8"]
-            appendPassword(password, to: &arguments)
+            appendReadPassword(password, to: &arguments)
             arguments.append(preparedURL.path)
             try validate(runSevenZip(arguments), passwordWasProvided: password?.isEmpty == false)
         }
@@ -316,7 +316,7 @@ final class ArchiveEngine {
 
         try withPreparedArchive(request.archiveURL, format: format) { preparedURL in
             var arguments = ["x", "-y", "-aoa", "-bsp1", "-sccUTF-8", "-o\(request.destinationURL.path)"]
-            appendPassword(request.password, to: &arguments)
+            appendReadPassword(request.password, to: &arguments)
             arguments.append(preparedURL.path)
             if let paths = request.paths, !paths.isEmpty, format != .bzip2, format != .xz {
                 arguments.append("--")
@@ -347,7 +347,7 @@ final class ArchiveEngine {
         if request.format.supportsCompressionLevel {
             arguments.append("-mx=\(min(9, max(0, request.compressionLevel)))")
         }
-        appendPassword(request.password, to: &arguments)
+        appendWritePassword(request.password, to: &arguments)
         arguments += metadataExclusions(enabled: request.stripMacMetadata)
         arguments.append(request.destinationURL.path)
         arguments.append("--")
@@ -370,7 +370,7 @@ final class ArchiveEngine {
                 throw ArchiveEngineError.unsupportedMutation("修改 RAR 需要额外安装 rar。")
             }
             var arguments = ["a", "-idq"]
-            if let password, !password.isEmpty { arguments.append("-p\(password)") }
+            appendWritePassword(password, to: &arguments)
             arguments.append(archiveURL.path)
             arguments += urls.map(\.lastPathComponent)
             try validate(runner.run(executableURL: rar, arguments: arguments, currentDirectory: parent), passwordWasProvided: password?.isEmpty == false)
@@ -378,7 +378,7 @@ final class ArchiveEngine {
         }
         try validatePasswordCharacters(password)
         var arguments = ["a", "-y", "-sccUTF-8"]
-        appendPassword(password, to: &arguments)
+        appendWritePassword(password, to: &arguments)
         arguments.append(archiveURL.path)
         arguments.append("--")
         arguments += urls.map(\.lastPathComponent)
@@ -395,7 +395,7 @@ final class ArchiveEngine {
                 throw ArchiveEngineError.unsupportedMutation("修改 RAR 需要额外安装 rar。")
             }
             var arguments = ["d", "-idq"]
-            if let password, !password.isEmpty { arguments.append("-p\(password)") }
+            appendWritePassword(password, to: &arguments)
             arguments.append(archiveURL.path)
             arguments += paths
             try validate(runner.run(executableURL: rar, arguments: arguments), passwordWasProvided: password?.isEmpty == false)
@@ -403,7 +403,7 @@ final class ArchiveEngine {
         }
         try validatePasswordCharacters(password)
         var arguments = ["d", "-y", "-sccUTF-8"]
-        appendPassword(password, to: &arguments)
+        appendWritePassword(password, to: &arguments)
         arguments.append(archiveURL.path)
         arguments.append("--")
         arguments += paths
@@ -451,7 +451,11 @@ final class ArchiveEngine {
         }
     }
 
-    private func appendPassword(_ password: String?, to arguments: inout [String]) {
+    private func appendWritePassword(_ password: String?, to arguments: inout [String]) {
+        if let password, !password.isEmpty { arguments.append("-p\(password)") }
+    }
+
+    private func appendReadPassword(_ password: String?, to arguments: inout [String]) {
         if let password, !password.isEmpty { arguments.append("-p\(password)") }
         else { arguments.append("-p-") }
     }
@@ -652,7 +656,7 @@ final class ArchiveEngine {
             throw ArchiveEngineError.unsupportedMutation("创建 RAR 需要额外安装 rar；读取和解压 RAR 无需安装。")
         }
         var arguments = ["a", "-idq", "-m\(min(5, max(0, Int((Double(request.compressionLevel) / 9.0 * 5.0).rounded()))))"]
-        if let password = request.password, !password.isEmpty { arguments.append("-p\(password)") }
+        appendWritePassword(request.password, to: &arguments)
         arguments.append(request.destinationURL.path)
         arguments += request.sourceNames
         let result = try runner.run(executableURL: rar, arguments: arguments, currentDirectory: request.sourceParent, cancellation: cancellation)

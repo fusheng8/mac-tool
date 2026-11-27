@@ -13,6 +13,20 @@ final class ArchiveActionExecutorTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testDefaultZipCompressionCreatesUnencryptedEntries() throws {
+        let root = try makeTemporaryDirectory()
+        let source = root.appendingPathComponent("sample.txt")
+        try "sample".write(to: source, atomically: true, encoding: .utf8)
+
+        try ArchiveActionExecutor().compressZip(urls: [source])
+
+        let archives = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        let archive = try XCTUnwrap(archives.first { $0.pathExtension == "zip" })
+        let entries = try ArchiveEngine().list(archive)
+        let entry = try XCTUnwrap(entries.first { $0.path == "sample.txt" })
+        XCTAssertFalse(entry.isEncrypted)
+    }
+
     func testSmartExtractZipWithoutDirectoryEntries() throws {
         let root = try makeTemporaryDirectory()
         let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
